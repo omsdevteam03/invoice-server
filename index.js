@@ -9,22 +9,48 @@ import customerRoutes from './routes/customerRoutes.js';
 const fastify = Fastify({ logger: true });
 
 await fastify.register(cors, {
-  origin: '*',
+  origin: process.env.CLIENT_URL || '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 });
 
+// Routes
 fastify.register(authRoutes, { prefix: '/api/auth' });
 fastify.register(quotationRoutes, { prefix: '/api/quotations' });
 fastify.register(invoiceRoutes, { prefix: '/api/invoices' });
-
-fastify.get('/', async () => ({ message: 'Server is running!' }));
 fastify.register(customerRoutes, { prefix: '/api/customers' });
 
+// Root
+fastify.get('/', async () => ({ message: 'Server is running!' }));
+
+// Health check
+fastify.get('/api/health', async (request, reply) => {
+  try {
+    await db.query('SELECT 1');
+    return reply.send({
+      status: 'OK',
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+      database: 'connected',
+      environment: process.env.NODE_ENV || 'development',
+    });
+  } catch (err) {
+    return reply.status(503).send({
+      status: 'ERROR',
+      database: 'disconnected',
+      message: err.message,
+    });
+  }
+});
+
+// Start
+const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || '0.0.0.0';
+
 try {
-  await fastify.listen({ port: 3000 });
-  console.log('Server running on http://localhost:3000');
+  await fastify.listen({ port: PORT, host: HOST });
+  console.log(`Server running on http://${HOST}:${PORT}`);
 } catch (err) {
-  console.error(err);
+  fastify.log.error(err);
   process.exit(1);
 }

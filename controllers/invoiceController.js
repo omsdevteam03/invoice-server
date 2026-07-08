@@ -6,19 +6,21 @@ export const getInvoices = async (req, reply) => {
     const rows = await getAllInvoices();
     const invoices = rows.map(inv => ({
       id: inv.id,
+      invoiceNo: inv.invoice_no,
       buyerName: inv.buyer_name,
-      company: inv.company,
-      email: inv.email,
-      phone: inv.phone,
+      buyerAddress: inv.buyer_address,
+      buyerMobile: inv.buyer_mobile,
+      buyerGSTIN: inv.buyer_gstin,
       date: inv.date,
       dueDate: inv.due_date,
       status: inv.status,
+      gstType: inv.gst_type,
       items: inv.items,
-      tax: Number(inv.tax),
-      discount: Number(inv.discount),
+      amountPaid: Number(inv.amount_paid || 0),
       total: Number(inv.total),
       amountDue: Number(inv.amount_due),
       notes: inv.notes,
+      signature: inv.signature,
     }));
     return reply.send(invoices);
   } catch (err) {
@@ -42,7 +44,25 @@ export const upsertInvoice = async (req, reply) => {
       [totalBilled, buyerName]
     );
 
-    return reply.send(saved);
+    // Return the saved invoice in the same shape the frontend expects
+    return reply.send({
+      id: saved.id,
+      invoiceNo: saved.invoice_no,
+      buyerName: saved.buyer_name,
+      buyerAddress: saved.buyer_address,
+      buyerMobile: saved.buyer_mobile,
+      buyerGSTIN: saved.buyer_gstin,
+      date: saved.date,
+      dueDate: saved.due_date,
+      status: saved.status,
+      gstType: saved.gst_type,
+      items: saved.items,
+      amountPaid: Number(saved.amount_paid || 0),
+      total: Number(saved.total),
+      amountDue: Number(saved.amount_due),
+      notes: saved.notes,
+      signature: saved.signature,
+    });
   } catch (err) {
     return reply.status(500).send({ message: 'Server error', error: err.message });
   }
@@ -56,3 +76,4 @@ export const removeInvoice = async (req, reply) => {
     return reply.status(500).send({ message: 'Server error', error: err.message });
   }
 };
+

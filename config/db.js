@@ -1,15 +1,18 @@
 import pg from 'pg';
+import dotenv from 'dotenv';
+dotenv.config();
+
 const { Pool } = pg;
 
 const pool = new Pool({
-  host: 'localhost',
-  user: 'postgres',
-  password: 'jermi23',
-  database: 'orangemega',
-  port: 5432,
-  max: 10,                    // max connections
-  idleTimeoutMillis: 30000,   // close idle connections after 30s
-  connectionTimeoutMillis: 2000, // timeout after 2s
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  port: process.env.DB_PORT,
+  max: 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 2000,
 });
 
 pool.on('error', (err) => {

@@ -14,13 +14,17 @@ export const getInvoices = async (req, reply) => {
       date: inv.date,
       dueDate: inv.due_date,
       status: inv.status,
-      gstType: inv.gst_type,
-      items: inv.items,
+gstType: inv.gst_type,
+      gstPercent: Number(inv.gst_percent || 18),
+      companyName: inv.company_name,
+      companyAddress: inv.company_address,
+      companyGSTIN: inv.company_gstin,     items: inv.items,
       amountPaid: Number(inv.amount_paid || 0),
       total: Number(inv.total),
       amountDue: Number(inv.amount_due),
-      notes: inv.notes,
+   notes: inv.notes,
       signature: inv.signature,
+      logo: inv.logo,
     }));
     return reply.send(invoices);
   } catch (err) {
@@ -44,7 +48,7 @@ export const upsertInvoice = async (req, reply) => {
       [totalBilled, buyerName]
     );
 
-    // Return the saved invoice in the same shape the frontend expects
+// Return the saved invoice in the same shape the frontend expects
     return reply.send({
       id: saved.id,
       invoiceNo: saved.invoice_no,
@@ -56,6 +60,10 @@ export const upsertInvoice = async (req, reply) => {
       dueDate: saved.due_date,
       status: saved.status,
       gstType: saved.gst_type,
+      gstPercent: Number(saved.gst_percent || 18),
+      companyName: saved.company_name,
+      companyAddress: saved.company_address,
+      companyGSTIN: saved.company_gstin,
       items: saved.items,
       amountPaid: Number(saved.amount_paid || 0),
       total: Number(saved.total),

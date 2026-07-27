@@ -7,7 +7,7 @@ import quotationRoutes from './routes/quotationRoutes.js';
 import invoiceRoutes from './routes/invoiceRoutes.js';
 import customerRoutes from './routes/customerRoutes.js';
 import expenseRoutes from './routes/expenseRoutes.js';
-
+import settingsRoutes from './routes/settingsRoutes.js';
 
 const fastify = Fastify({ logger: true });
 
@@ -23,7 +23,7 @@ fastify.register(quotationRoutes, { prefix: '/api/quotations' });
 fastify.register(invoiceRoutes, { prefix: '/api/invoices' });
 fastify.register(customerRoutes, { prefix: '/api/customers' });
 fastify.register(expenseRoutes, { prefix: '/api/expenses' });
-
+fastify.register(settingsRoutes, { prefix: '/api/settings' });
 
 // Root
 fastify.get('/', async () => ({ message: 'Server is running!' }));

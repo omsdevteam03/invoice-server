@@ -1,27 +1,28 @@
 import pool from '../config/db.js';
 
 export const getAllInvoices = async () => {
-  const result = await pool.query('SELECT * FROM invoices ORDER BY created_at DESC');
+  const result = await pool.query('SELECT * FROM invoices WHERE deleted_at IS NULL ORDER BY created_at DESC');
   return result.rows;
 };
-
 export const saveInvoice = async (inv) => {
   const result = await pool.query(`
     INSERT INTO invoices (
-      id, invoice_no, buyer_name, buyer_address, buyer_mobile, buyer_gstin,
+      id, invoice_no, buyer_name, buyer_company_name, buyer_address, buyer_mobile, buyer_gstin,
       date, due_date, status, gst_type, gst_percent, items, amount_paid, total, amount_due, notes, signature,
-      company_name, company_address, company_gstin, logo
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
-    ON CONFLICT (id) DO UPDATE SET
-      invoice_no=$2, buyer_name=$3, buyer_address=$4, buyer_mobile=$5, buyer_gstin=$6,
-      date=$7, due_date=$8, status=$9, gst_type=$10, gst_percent=$11, items=$12, amount_paid=$13,
-      total=$14, amount_due=$15, notes=$16, signature=$17,
-      company_name=$18, company_address=$19, company_gstin=$20, logo=$21
+      company_name, company_address, company_gstin, logo, from_quotation_id
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+     ON CONFLICT (id) DO UPDATE SET
+      invoice_no=$2, buyer_name=$3, buyer_company_name=$4, buyer_address=$5, buyer_mobile=$6, buyer_gstin=$7,
+      date=$8, due_date=$9, status=$10, gst_type=$11, gst_percent=$12, items=$13, amount_paid=$14,
+      total=$15, amount_due=$16, notes=$17, signature=$18,
+      company_name=$19, company_address=$20, company_gstin=$21, logo=$22, from_quotation_id=$23,
+      deleted_at=NULL
     RETURNING *`,
     [
       inv.id,
       inv.invoiceNo,
       inv.buyerName,
+      inv.buyerCompanyName || null,  // ← NEW: client's company name
       inv.buyerAddress || null,
       inv.buyerMobile || null,
       inv.buyerGSTIN || null,
@@ -39,12 +40,31 @@ export const saveInvoice = async (inv) => {
       inv.companyName || null,
       inv.companyAddress || null,
       inv.companyGSTIN || null,
-      inv.logo || null,             // ← new
+      inv.logo || null,
+      inv.fromQuotationId || null,  // ← NEW: links this invoice back to its source quotation
     ]
   );
   return result.rows[0];
 };
 
 export const deleteInvoice = async (id) => {
+  await pool.query('UPDATE invoices SET deleted_at = NOW() WHERE id = $1', [id]);
+};
+
+export const getTrashedInvoices = async () => {
+  const result = await pool.query('SELECT * FROM invoices WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC');
+  return result.rows;
+};
+
+export const restoreInvoice = async (id) => {
+  const result = await pool.query('UPDATE invoices SET deleted_at = NULL WHERE id = $1 RETURNING *', [id]);
+  return result.rows[0];
+};
+
+export const permanentlyDeleteInvoice = async (id) => {
   await pool.query('DELETE FROM invoices WHERE id = $1', [id]);
+};
+
+export const purgeOldTrashedInvoices = async () => {
+  await pool.query(`DELETE FROM invoices WHERE deleted_at IS NOT NULL AND deleted_at < NOW() - INTERVAL '30 days'`);
 };

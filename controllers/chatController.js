@@ -31,6 +31,15 @@ function getTemplate(templateId) {
     || QUOTATION_TEMPLATES.find((t) => t.id === DEFAULT_TEMPLATE_ID);
 }
 
+// Used only when the AI forgets to send templateId
+function pickTemplateFallback(text = "") {
+  const t = text.toLowerCase();
+  if (/(brand|logo|design|marketing|social media|video|photo|creative)/.test(t)) return "proj-creative";
+  if (/(legal|audit|accounting|tax|finance|insurance)/.test(t)) return "proj-classic";
+  if (/(enterprise|erp|crm|corporate|b2b)/.test(t)) return "proj-corporate";
+  return "proj-modern"; // websites, apps, software and everything else
+}
+
 // Same fixed boilerplate handleNewFromTemplate uses in QuotationsPage.jsx —
 // identical across every template style, so it's reused as-is here.
 const STANDARD_SCOPE_OF_WORK = "Responsive Website Design\n5 Website Pages\nContact Form Integration\nMobile Optimization\nBasic SEO Setup";
@@ -39,61 +48,103 @@ const STANDARD_TECHNOLOGY = "React.js / Next.js (Frontend)\nNode.js & Express.js
 const STANDARD_TIMELINE_DESC = "Completed within 7–14 working days from project confirmation\nDevelopment carried out in phases\nRegular progress updates shared with client";
 const STANDARD_PAYMENT_TERMS = "50% advance payment required before project commencement\nRemaining 50% after preview approval and before final delivery";
 const STANDARD_TERMS = "This quotation is valid for 30 days from the date of issue\nAny additional work outside the agreed scope will be charged separately\n50% advance payment is required before project commencement\nFinal deliverables handed over after full payment is received";
+// Keeps the name safe: letters, numbers, spaces only, max 20 chars.
+function cleanAiName(raw) {
+  const name = String(raw || "").replace(/[^\p{L}\p{N} _-]/gu, "").trim().slice(0, 20);
+  return name || "Nexa";
+}
+
 const SYSTEM_INSTRUCTION =
-  "You are Nexa, the Invoice Pro assistant embedded in OrangeMega's CRM dashboard. " +
+  "You are __AI_NAME__, the Invoice Pro assistant embedded in OrangeMega's CRM dashboard. " +
   "You can look up, create, edit, and delete customers, quotations, and invoices directly " +
   "when the user asks — don't just describe how to do it, actually call the tool. " +
   "Never guess or estimate counts, totals, or statistics. For any question about how many " +
   "quotations exist or their status breakdown, always call get_quotation_stats and report its " +
   "exact numbers — do not answer from memory or make up figures. " +
-  "If required info is missing (e.g. no customer name, no items), ask a short clarifying " +
-  "question before calling a tool. Before creating a quotation or invoice, always call " +
+  "If required info is missing (e.g. no customer name, no items), do NOT write questions as " +
+  "text. Call ask_user_questions with at most 5 short questions, written in the same language " +
+  "the user is using. Only ask for what is truly needed. When you need the items/services and " +
+  "prices for a quotation or invoice, ask ONE question with type 'items' — never separate " +
+  "description and price questions. The user's reply lists one item per line like " +
+  "'1. Frontend | qty 1 | unit price ₹2000'; turn each line into one entry in the items array " +
+  "with the exact quantity and unitPrice. If the user's reply shows '(skipped)' " +
+  "for a question, never ask it again: use a sensible default or leave that field blank, and " +
+  "go ahead with the tool call. Before creating a quotation or invoice, always call " +
   "search_customers first to check if the customer already exists — only call create_customer " +
-  "if they don't. When creating a quotation, use the templateId matching any style the user " +
-  "mentions (classic/formal, creative, elegant/bold, modern, minimal, corporate) — otherwise " +
-  "omit templateId entirely and the plain default layout will be used. Always include a short, " +
+  "if they don't. When creating a quotation, ALWAYS set templateId. If the user names a style " +
+  "(classic/formal, creative, elegant/bold, modern, minimal, corporate), use that one. If they " +
+  "don't, choose the best fit for the project: proj-modern for websites, apps, software and " +
+  "tech; proj-creative for design, branding, marketing and media; proj-corporate for " +
+  "enterprise/B2B work; proj-classic for legal, finance and other formal work; proj-minimal " +
+  "for small or simple jobs; proj-elegant for premium or high-end work. Use proj-custom only " +
+  "if the user asks for a plain, custom or default layout. Always include a short, " +
   "clear project description summarizing what the quotation is for, even if the user didn't " +
   "explicitly dictate one — infer it from the conversation and the items being quoted. When " +
   "creating a quotation, you must also write scopeOfWork, deliverables, technologyUsed, and " +
   "timelineDesc yourself, tailored specifically to the project's title/description — never " +
   "reuse generic 'website development' boilerplate for a different kind of project (e.g. an " +
- "ecommerce site needs scope items like product catalog, cart, checkout, payment gateway; " +
-"a mobile app needs app-store submission, push notifications, etc). Each of these fields " +
-"is an array — put one distinct item per array entry, never multiple items joined into a " +
-"single string. " +
- "If the user asks for a long, detailed, thorough, or multi-page quotation, go far beyond the " +
-"minimum: write substantially longer scopeOfWork/deliverables/technologyUsed/timelineDesc " +
-"(8-15 lines each instead of 4-5), and add 6-10 customSections that together read like a full " +
-"proposal document, not a short quote. Mix paragraph and table sections depending on what the " +
-"content actually is: use type 'table' for anything that is naturally a list of rows — a " +
-"feature/module breakdown (columns like Feature/Description or Module/Functionality), package " +
-"or pricing tiers (columns like Package/Price/Scope), or a phased project timeline (columns " +
-"like Phase/Activities/Duration). Use type 'paragraph' for narrative sections — company " +
-"profile, methodology/process, why choose us, assumptions & exclusions, support & maintenance " +
-"terms, and a closing summary/approval section. For an e-commerce, SaaS, or app-style project, " +
-"always include a customer-facing features table and a separate admin/management features " +
-"table, each with 10+ realistic rows for that specific project type — never leave a feature " +
-"table thin or generic. Always write in clean, professional, grammatically correct English " +
-"regardless of how the user's own prompt is worded — correct any grammar, spelling, or phrasing " +
-"issues from the user's request rather than carrying them into the quotation. " +
+  "ecommerce site needs scope items like product catalog, cart, checkout, payment gateway; " +
+  "a mobile app needs app-store submission, push notifications, etc). Each of these fields " +
+  "is an array — put one distinct item per array entry, never multiple items joined into a " +
+  "single string. " +
+  "If the user asks for a long, detailed, thorough, or multi-page quotation, go far beyond the " +
+  "minimum: write substantially longer scopeOfWork/deliverables/technologyUsed/timelineDesc " +
+  "(8-15 lines each instead of 4-5), and add 6-10 customSections that together read like a full " +
+  "proposal document, not a short quote. Mix paragraph and table sections depending on what the " +
+  "content actually is: use type 'table' for anything that is naturally a list of rows — a " +
+  "feature/module breakdown (columns like Feature/Description or Module/Functionality), package " +
+  "or pricing tiers (columns like Package/Price/Scope), or a phased project timeline (columns " +
+  "like Phase/Activities/Duration). Use type 'paragraph' for narrative sections — company " +
+  "profile, methodology/process, why choose us, assumptions & exclusions, support & maintenance " +
+  "terms, and a closing summary/approval section. For an e-commerce, SaaS, or app-style project, " +
+  "always include a customer-facing features table and a separate admin/management features " +
+  "table, each with 10+ realistic rows for that specific project type — never leave a feature " +
+  "table thin or generic. Always write in clean, professional, grammatically correct English " +
+  "regardless of how the user's own prompt is worded — correct any grammar, spelling, or phrasing " +
+  "issues from the user's request rather than carrying them into the quotation. " +
   "When creating an invoice, " +
   "pass type: 'Proforma' only if the user explicitly says proforma/PI — otherwise leave it as " +
   "the default Final invoice. " +
+  "For invoices and customers, never make up a company name: if the user gave only a name, " +
+  "leave buyerCompanyName empty. " +
   "Before editing or deleting anything, always call the matching search/find " +
   "tool first to locate the exact record and confirm you have the right one — never guess an ID. " +
   "For deletes specifically, briefly confirm with the user which record you're about to delete " +
   "before calling the delete tool, unless they already named it precisely (e.g. an exact invoice " +
-  "number). After any tool runs, confirm what happened in plain, friendly language, including " +
-  "the ID/reference number. " +
+  "number). After any tool runs, confirm what happened in plain, friendly language. For invoices " +
+  "and customers include the ID/number; for quotations refer to the customer and project title " +
+  "instead. " +
+  "Quotations you create are saved as DRAFTS with no official quotation number — the number is " +
+  "only assigned when the user clicks Send on the quotation page. Never invent or mention a QT- " +
+  "number for a new draft; tell the user it is a draft they can review, edit, and send using " +
+  "the 'View Quotation' button. " +
   "update_quotation can now edit any section of an existing quotation — terms, scope of work, " +
   "deliverables, technology used, timeline description, payment terms, project title/description, " +
   "and custom sections — not just status/client/items. When the user asks to change, lengthen, or " +
   "add to any of these (e.g. '20 lines of terms and conditions'), call update_quotation with the " +
   "full replacement content for that field — never claim you updated something without calling " +
   "the tool with the actual new content. " +
-  "If asked your name, say you're Nexa.";
+  "The quotation has two parties: the CLIENT ('To': name, company, email, phone, clientAddress) and " +
+  "the ISSUER ('From': issuerName, issuerAddress, issuerPhone, issuerEmail). When the user says " +
+  "'from', 'our company', 'my company', or 'issuer', change the issuer* fields, not the client ones. " +
+  "You can also change the quotation date with the date field. " +
+  "The quotation's own NAME/TITLE is the projectTitle field. When the user asks to rename, " +
+  "retitle, or 'change the quotation name' to something, call search_quotations to find it, " +
+  "then call update_quotation with projectTitle set to exactly the new name they gave. Do NOT " +
+  "use the name field for this, because name is the client's contact person. Only change " +
+  "name/company when the user says customer/client name. " +
+  "LANGUAGE: If the user's message is in Tamil (Tamil script, or Tamil written in English letters), " +
+  "write your chat reply to them in natural, simple Tamil script (தமிழ்). Keep numbers, ₹ amounts, " +
+  "invoice/customer IDs and names of people/companies exactly as they are. This applies ONLY to your " +
+  "chat reply — the content you save inside quotations and invoices must still be professional " +
+  "English, as instructed above. If the user writes in English, reply in English. " +
+  "IMPORTANT: Never say you created, updated, or deleted anything unless the matching tool " +
+  "call ran successfully in this same turn. When the user has answered your questions, call " +
+  "the tool immediately instead of describing what you will do. If a tool returns an error, " +
+  "tell the user what went wrong. " +
+  "If asked your name, say you're __AI_NAME__.";
 
-const MAX_TOOL_ROUNDS = 4;
+const MAX_TOOL_ROUNDS = 6;
 
 // Detects the "![image](data:...)\n<text>" format the frontend saves for
 // image messages. Returns { imageDataUrl, text }. If there's no image,
@@ -108,6 +159,30 @@ function parseImageContent(content) {
 const TOOLS = [
   {
     functionDeclarations: [
+      {
+        name: "ask_user_questions",
+        description: "Ask the user for missing details as a short fill-in form. Every question can be skipped by the user. Use this instead of writing questions in plain text.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            intro: { type: "STRING", description: "One short sentence shown above the form." },
+            questions: {
+              type: "ARRAY",
+              items: {
+                type: "OBJECT",
+                properties: {
+                  key: { type: "STRING", description: "Short id, e.g. projectTitle" },
+                  label: { type: "STRING", description: "The question shown to the user" },
+                  placeholder: { type: "STRING", description: "Example answer" },
+                  type: { type: "STRING", description: "'text' (default) for a normal answer, or 'items' for a list of line items (name + quantity + price rows). Use 'items' whenever you need the products/services and prices for a quotation or invoice." },
+                },
+                required: ["key", "label"],
+              },
+            },
+          },
+          required: ["questions"],
+        },
+      },
       {
         name: "search_customers",
         description: "Find existing customers by name/company to get their ID before creating, editing, or deleting a customer, quotation, or invoice.",
@@ -174,7 +249,7 @@ const TOOLS = [
             customerId: { type: "STRING", description: "ID of an existing customer, from search_customers or create_customer" },
             templateId: {
               type: "STRING",
-              description: "Which quotation template style to use. One of: proj-custom, proj-classic, proj-creative, proj-elegant, proj-modern, proj-minimal, proj-corporate. Omit this field entirely (or use proj-custom) if the user didn't ask for a particular visual style — the plain 'Customize Your Own' layout will be used by default.",
+              description: "Which quotation template style to use. One of: proj-custom, proj-classic, proj-creative, proj-elegant, proj-modern, proj-minimal, proj-corporate. Always provide this. Use the style the user asked for; otherwise pick the best fit for the project type. Use proj-custom only if the user explicitly wants a plain/custom layout.",
             },
             items: {
               type: "ARRAY",
@@ -190,62 +265,62 @@ const TOOLS = [
             },
             projectTitle: { type: "STRING" },
             description: { type: "STRING", description: "A 1–2 sentence project description summarizing what this quotation covers, written for the client (e.g. 'This proposal covers the design and development of a responsive company website with 5 pages and a contact form.')." },
-                scopeOfWork: {
-        type: "ARRAY",
-        items: { type: "STRING" },
-        description: "Scope items, one per array entry, tailored specifically to this project (e.g. for an ecommerce site: product listing pages, cart & checkout, payment gateway integration, order management — NOT generic boilerplate).",
-      },
-      deliverables: {
-        type: "ARRAY",
-        items: { type: "STRING" },
-        description: "Deliverables, one per array entry, specific to what this project will hand over to the client.",
-      },
-      technologyUsed: {
-        type: "ARRAY",
-        items: { type: "STRING" },
-        description: "Technology/stack items, one per array entry, matching what's actually appropriate for this project.",
-      },
-      timelineDesc: {
-        type: "ARRAY",
-        items: { type: "STRING" },
-        description: "Timeline/process notes, one per array entry, describing how this specific project will be delivered.",
-      },
-            notes: { type: "STRING" },
-              customSections: {
-        type: "ARRAY",
-        description:
-          "Extra sections beyond the standard ones, used to add depth, structure, and length to a " +
-          "quotation. Use several of these whenever the user asks for a long, detailed, or multi-page " +
-          "quotation, or when the project has a natural feature/module list, package pricing, or a " +
-          "phased plan that reads better as a table than a paragraph. Good section titles: Project " +
-          "Objectives, Target Platforms, Customer-Side Features, Admin & Management Features, " +
-          "Design & UX Scope, Core Pages, Payment & Delivery Integrations, Package Pricing, Project " +
-          "Timeline & Support, Additional Terms, Final Summary & Approval.",
-        items: {
-          type: "OBJECT",
-          properties: {
-            title: { type: "STRING" },
-            type: {
-              type: "STRING",
-              description: "'paragraph' for a plain text section (default), or 'table' when the content is naturally rows of data (feature lists, package pricing, phased timelines).",
-            },
-            content: { type: "STRING", description: "Used when type is 'paragraph' (or omitted). Full paragraph text for this section." },
-            columns: {
+            scopeOfWork: {
               type: "ARRAY",
               items: { type: "STRING" },
-              description: "Used when type is 'table'. Column headers, e.g. ['Feature', 'Description'] or ['Package', 'Price', 'Scope'].",
+              description: "Scope items, one per array entry, tailored specifically to this project (e.g. for an ecommerce site: product listing pages, cart & checkout, payment gateway integration, order management — NOT generic boilerplate).",
             },
-            rows: {
+            deliverables: {
               type: "ARRAY",
-              items: { type: "ARRAY", items: { type: "STRING" } },
-              description: "Used when type is 'table'. Each inner array is one row, with one string per column, in the same order as 'columns'.",
+              items: { type: "STRING" },
+              description: "Deliverables, one per array entry, specific to what this project will hand over to the client.",
+            },
+            technologyUsed: {
+              type: "ARRAY",
+              items: { type: "STRING" },
+              description: "Technology/stack items, one per array entry, matching what's actually appropriate for this project.",
+            },
+            timelineDesc: {
+              type: "ARRAY",
+              items: { type: "STRING" },
+              description: "Timeline/process notes, one per array entry, describing how this specific project will be delivered.",
+            },
+                        includeGst: { type: "BOOLEAN", description: "Default false. Set to true ONLY if the user explicitly asks for GST/tax to be added." },
+            customSections: {
+              type: "ARRAY",
+              description:
+                "Extra sections beyond the standard ones, used to add depth, structure, and length to a " +
+                "quotation. Use several of these whenever the user asks for a long, detailed, or multi-page " +
+                "quotation, or when the project has a natural feature/module list, package pricing, or a " +
+                "phased plan that reads better as a table than a paragraph. Good section titles: Project " +
+                "Objectives, Target Platforms, Customer-Side Features, Admin & Management Features, " +
+                "Design & UX Scope, Core Pages, Payment & Delivery Integrations, Package Pricing, Project " +
+                "Timeline & Support, Additional Terms, Final Summary & Approval.",
+              items: {
+                type: "OBJECT",
+                properties: {
+                  title: { type: "STRING" },
+                  type: {
+                    type: "STRING",
+                    description: "'paragraph' for a plain text section (default), or 'table' when the content is naturally rows of data (feature lists, package pricing, phased timelines).",
+                  },
+                  content: { type: "STRING", description: "Used when type is 'paragraph' (or omitted). Full paragraph text for this section." },
+                  columns: {
+                    type: "ARRAY",
+                    items: { type: "STRING" },
+                    description: "Used when type is 'table'. Column headers, e.g. ['Feature', 'Description'] or ['Package', 'Price', 'Scope'].",
+                  },
+                  rows: {
+                    type: "ARRAY",
+                    items: { type: "ARRAY", items: { type: "STRING" } },
+                    description: "Used when type is 'table'. Each inner array is one row, with one string per column, in the same order as 'columns'.",
+                  },
+                },
+                required: ["title"],
+              },
             },
           },
-          required: ["title"],
-        },
-      },
-          },
-          required: ["customerId", "items", "description", "scopeOfWork", "deliverables", "technologyUsed", "timelineDesc"],
+          required: ["customerId", "templateId", "projectTitle", "items", "description", "scopeOfWork", "deliverables", "technologyUsed", "timelineDesc"],
         },
       },
 
@@ -260,21 +335,28 @@ const TOOLS = [
           required: ["query"],
         },
       },
-        {
+      {
         name: "update_quotation",
-description: "Edit fields on an existing quotation — status, client details, items, GST/tax settings, or any of its content sections (terms, scope of work, deliverables, technology, timeline description, payment terms, project title/description, and custom sections). Only send the fields that are changing. If items are provided (or includeGst/gstPercent changes), the total is recalculated.",        parameters: {
+        description: "Edit fields on an existing quotation — status, client details, items, GST/tax settings, or any of its content sections (terms, scope of work, deliverables, technology, timeline description, payment terms, project title/description, and custom sections). Only send the fields that are changing. If items are provided (or includeGst/gstPercent changes), the total is recalculated.", parameters: {
           type: "OBJECT",
           properties: {
             quotationId: { type: "STRING", description: "ID of the quotation to edit, from search_quotations" },
             status: { type: "STRING", description: "e.g. Draft, Sent, Accepted, Rejected" },
-                 includeGst: { type: "BOOLEAN", description: "Set to false to remove GST/tax entirely from this quotation's total. Set to true to include it." },
-      gstPercent: { type: "NUMBER", description: "GST percentage to apply, if includeGst is true. Only send this if the user is asking to change the GST rate." },
+            includeGst: { type: "BOOLEAN", description: "Set to false to remove GST/tax entirely from this quotation's total. Set to true to include it." },
+            gstPercent: { type: "NUMBER", description: "GST percentage to apply, if includeGst is true. Only send this if the user is asking to change the GST rate." },
 
-            name: { type: "STRING", description: "Client contact person's name" },
+            name: { type: "STRING", description: "Client contact person's name. Do NOT use this to rename the quotation itself; use projectTitle for that." },
             company: { type: "STRING", description: "Client company name" },
-            email: { type: "STRING" },
-            phone: { type: "STRING" },
+            email: { type: "STRING", description: "CLIENT's email (the 'To' side), not the issuing company's" },
+            phone: { type: "STRING", description: "CLIENT's phone (the 'To' side), not the issuing company's" },
             clientAddress: { type: "STRING", description: "Client address, including city/place" },
+
+            // ── "From" section (the issuing company) ──
+            issuerName: { type: "STRING", description: "The issuing company's name shown in the 'From' section." },
+            issuerAddress: { type: "STRING", description: "The issuing company's address shown in the 'From' section." },
+            issuerPhone: { type: "STRING", description: "The issuing company's phone number shown in the 'From' section." },
+            issuerEmail: { type: "STRING", description: "The issuing company's email shown in the 'From' section." },
+            date: { type: "STRING", description: "Quotation date, YYYY-MM-DD." },
             items: {
               type: "ARRAY",
               items: {
@@ -289,7 +371,7 @@ description: "Edit fields on an existing quotation — status, client details, i
             },
             notes: { type: "STRING" },
             validUntil: { type: "STRING", description: "YYYY-MM-DD" },
-            projectTitle: { type: "STRING" },
+            projectTitle: { type: "STRING", description: "The quotation's own name/title (shown under 'QUOTATION'). Use this whenever the user asks to rename or change the quotation name/title/project name. NOT the client's name." },
             description: { type: "STRING", description: "The project description shown near the top of the quotation." },
             scopeOfWork: { type: "ARRAY", items: { type: "STRING" }, description: "Full replacement list of scope items, one per array entry." },
             deliverables: { type: "ARRAY", items: { type: "STRING" }, description: "Full replacement list of deliverables, one per array entry." },
@@ -345,8 +427,8 @@ description: "Edit fields on an existing quotation — status, client details, i
         parameters: {
           type: "OBJECT",
           properties: {
-            buyerName: { type: "STRING" },
-            buyerCompanyName: { type: "STRING" },
+            buyerName: { type: "STRING", description: "The buyer's person name exactly as the user gave it." },
+            buyerCompanyName: { type: "STRING", description: "ONLY if the user explicitly gave a company name. If they gave just a name, OMIT this field entirely. Never copy the buyer's name into it." },
             buyerAddress: { type: "STRING" },
             buyerMobile: { type: "STRING" },
             buyerGSTIN: { type: "STRING" },
@@ -425,6 +507,23 @@ description: "Edit fields on an existing quotation — status, client details, i
   },
 ];
 
+// ADD THIS BLOCK — maps a tool name to a function that pulls a
+// {type, id, label} reference out of that tool's result, so the chat
+// bubble can show a "View X" button. Only tools that create/update a
+// record the user would want to open are listed here.
+// Drafts have no number, so fall back to the project title
+const quotationLabel = (r) =>
+  r.quotation_number || r.quotationNumber || r.project_title || r.projectTitle || "Draft";
+
+const VIEWABLE_TOOLS = {
+  create_quotation: (result) => (result?.id ? { type: "quotation", id: result.id, label: quotationLabel(result) } : null),
+  update_quotation: (result) => (result?.id ? { type: "quotation", id: result.id, label: quotationLabel(result) } : null),
+  create_invoice: (result) => (result?.id ? { type: "invoice", id: result.id, label: result.invoice_no || result.id } : null),
+  update_invoice: (result) => (result?.id ? { type: "invoice", id: result.id, label: result.invoice_no || result.id } : null),
+  create_customer: (result) => (result?.id ? { type: "customer", id: result.id, label: result.name } : null),
+  update_customer: (result) => (result?.id ? { type: "customer", id: result.id, label: result.name } : null),
+};
+
 function calcTotal(items = []) {
   return items.reduce((sum, i) => sum + (Number(i.quantity) || 0) * (Number(i.unitPrice) || 0), 0);
 }
@@ -436,6 +535,9 @@ function calcTotal(items = []) {
 // text rather than an actual line break — this converts it back into
 // real newlines before joining, so old/malformed model output still
 // renders correctly instead of showing the literal "\n" in the UI.
+// One activity entry. Later you can add { user: request.user.name } here.
+const logEntry = (message) => ({ message, date: new Date().toISOString() });
+
 function joinLines(value) {
   if (Array.isArray(value)) {
     return value.map((line) => String(line).trim()).filter(Boolean).join("\n");
@@ -450,6 +552,12 @@ function addDays(days) {
   const d = new Date();
   d.setDate(d.getDate() + days);
   return d.toISOString().slice(0, 10);
+}
+
+// Internal id for drafts (same shape as the frontend's generateInternalId).
+// The real QT-xxxx number is only created by POST /quotations/:id/send.
+function generateInternalId() {
+  return `qt_${Date.now().toString(36)}_${crypto.randomBytes(3).toString("hex")}`;
 }
 
 // Fallback used only if the AI omits `description` on create_quotation —
@@ -589,7 +697,9 @@ async function executeTool(name, args) {
         return { error: "Customer not found. Run search_customers again to confirm the ID." };
       }
       if (!args.items || args.items.length === 0) {
-        return { error: "At least one line item (description, quantity, unitPrice) is required." };
+        return {
+          error: "No line items were provided. Do NOT retry and do NOT apologize. Immediately call ask_user_questions with ONE question of type 'items' (key: items, label: 'What services and prices should the quotation include?') and optionally one question for the project title.",
+        };
       }
 
       const [companyRow, invoiceSettingsRow] = await Promise.all([
@@ -597,7 +707,9 @@ async function executeTool(name, args) {
         settingsModel.getInvoiceSettings(),
       ]);
 
-      const template = getTemplate(args.templateId);
+      const template = getTemplate(
+        args.templateId || pickTemplateFallback(`${args.projectTitle || ""} ${args.description || ""}`)
+      );
 
       const items = args.items.map((it) => {
         const qty = Number(it.quantity) || 0;
@@ -606,47 +718,62 @@ async function executeTool(name, args) {
       });
       const subtotal = items.reduce((sum, i) => sum + i.total, 0);
       const gstPercent = invoiceSettingsRow?.gst_percent ?? 18;
-      const tax = Math.round(subtotal * (gstPercent / 100));
+      const includeGst = args.includeGst === true;   // GST is OFF unless the user explicitly asks
+      const tax = includeGst ? Math.round(subtotal * (gstPercent / 100)) : 0;
       const total = subtotal + tax;
+
+      // Build costItems first, each with an id (CostItemsTable edits rows by id)
+      const costItems = items.map((i, idx) => ({
+        id: `item-${Date.now()}-${idx}`,
+        name: i.description,
+        amount: i.total,
+      }));
+
+      const newId = generateInternalId();            // NEW: keep the id in a variable
 
       const quotation = await quotationModel.saveQuotation(
         {
-          name: customer.name,
-          company: customer.company || null,
-          email: customer.email || null,
-          phone: customer.phone || null,
+          id: newId,                                 // CHANGED: use the variable
+          isTemplate: false,                 // NEW
+          customerId: customer.id,           // NEW
+          name: customer.name || "",         // CHANGED: "" instead of null
+          company: customer.company || "",   // CHANGED: "" instead of null (list calls .toLowerCase())
+          email: customer.email || "",       // CHANGED
+          phone: customer.phone || "",       // CHANGED
           date: new Date().toISOString().slice(0, 10),
           validUntil: addDays(30),
           status: "Draft",
           amount: total,
           timeline: template.timeline,
-              description: args.description?.trim() || buildFallbackDescription(customer, companyRow, args.items),
-      scopeOfWork: joinLines(args.scopeOfWork) || STANDARD_SCOPE_OF_WORK,
-      deliverables: joinLines(args.deliverables) || STANDARD_DELIVERABLES,
-      technologyUsed: joinLines(args.technologyUsed) || STANDARD_TECHNOLOGY,
-      timelineDesc: joinLines(args.timelineDesc) || STANDARD_TIMELINE_DESC,
-          projectCost: `Project Cost: ₹${subtotal.toLocaleString()}\nGST (${gstPercent}%): ₹${tax.toLocaleString()}\nTotal Project Cost: ₹${total.toLocaleString()}`,
+          description: args.description?.trim() || buildFallbackDescription(customer, companyRow, args.items),
+          scopeOfWork: joinLines(args.scopeOfWork) || STANDARD_SCOPE_OF_WORK,
+          deliverables: joinLines(args.deliverables) || STANDARD_DELIVERABLES,
+          technologyUsed: joinLines(args.technologyUsed) || STANDARD_TECHNOLOGY,
+          timelineDesc: joinLines(args.timelineDesc) || STANDARD_TIMELINE_DESC,
+          projectCost: includeGst
+            ? `Project Cost: ₹${subtotal.toLocaleString()}\nGST (${gstPercent}%): ₹${tax.toLocaleString()}\nTotal Project Cost: ₹${total.toLocaleString()}`
+            : `Project Cost: ₹${subtotal.toLocaleString()}\nTotal Project Cost: ₹${total.toLocaleString()}`,
           paymentTerms: invoiceSettingsRow?.default_payment_terms || STANDARD_PAYMENT_TERMS,
           terms: STANDARD_TERMS,
           items,
-                   customSections: (args.customSections || []).map((s) => {
-        const title = (s.title || "").replace(/\\n/g, "\n").trim();
-        if (s.type === "table") {
-          return {
-            title,
-            type: "table",
-            columns: Array.isArray(s.columns) ? s.columns.map((c) => String(c).trim()) : [],
-            rows: Array.isArray(s.rows)
-              ? s.rows.map((row) => (Array.isArray(row) ? row.map((cell) => String(cell).trim()) : []))
-              : [],
-          };
-        }
-        return {
-          title,
-          type: "paragraph",
-          content: (s.content || "").replace(/\\n/g, "\n").trim(),
-        };
-      }),
+          customSections: (args.customSections || []).map((s) => {
+            const title = (s.title || "").replace(/\\n/g, "\n").trim();
+            if (s.type === "table") {
+              return {
+                title,
+                type: "table",
+                columns: Array.isArray(s.columns) ? s.columns.map((c) => String(c).trim()) : [],
+                rows: Array.isArray(s.rows)
+                  ? s.rows.map((row) => (Array.isArray(row) ? row.map((cell) => String(cell).trim()) : []))
+                  : [],
+              };
+            }
+            return {
+              title,
+              type: "paragraph",
+              content: (s.content || "").replace(/\\n/g, "\n").trim(),
+            };
+          }),
           signature: "/signature.png",
           accentColor: null,
           accentBg: null,
@@ -656,14 +783,23 @@ async function executeTool(name, args) {
           issuerEmail: companyRow?.company_email || "",
           issuerContact: null,
           projectTitle: args.projectTitle || "",
-          clientAddress: [customer.address, customer.city].filter(Boolean).join(", ") || "", logo: companyRow?.logo || null,
+          clientAddress: [customer.address, customer.city].filter(Boolean).join(", "),
+          logo: companyRow?.logo || null,
           templateStyle: template.templateStyle,
-          costItems: items.map((i) => ({ name: i.description, amount: i.total })),
-          includeGst: true, gstPercent,
+          costItems,                         // CHANGED: uses the array with ids
+          includeGst,
+          gstMode: includeGst ? "with" : "without",
+          gstPercent,
         },
-        true
+        true,
+        true   // byAi -> logged as "by Nexa AI"
       );
-      return quotation;
+      // Re-read from the DB so a failed save is reported instead of hidden
+      const saved = await findQuotationById(newId);
+      if (!saved) {
+        return { error: "The quotation could not be saved to the database. Please try again." };
+      }
+      return { ...quotation, ...saved, id: saved.id };
     }
 
     case "search_quotations": {
@@ -673,6 +809,8 @@ async function executeTool(name, args) {
         .filter(
           (row) =>
             row.id?.toLowerCase().includes(q) ||
+            row.quotation_number?.toLowerCase().includes(q) ||   // NEW: search "QT-0004"
+            row.project_title?.toLowerCase().includes(q) ||      // NEW
             row.name?.toLowerCase().includes(q) ||
             row.company?.toLowerCase().includes(q)
         )
@@ -681,43 +819,50 @@ async function executeTool(name, args) {
     }
 
     case "update_quotation": {
-  const existing = await findQuotationById(args.quotationId);
-  if (!existing) return { error: "Quotation not found. Run search_quotations again to confirm the ID." };
+      const existing = await findQuotationById(args.quotationId);
+      if (!existing) return { error: "Quotation not found. Run search_quotations again to confirm the ID." };
 
-  const includeGst = args.includeGst ?? existing.include_gst ?? true;
-  const gstPercent = args.gstPercent ?? existing.gst_percent ?? 18;
+      const gstMode = args.includeGst !== undefined
+        ? (args.includeGst ? "with" : "without")
+        : (existing.gst_mode || (existing.include_gst === false ? "without" : "with"));
+      const includeGst = gstMode === "with";
+      const gstPercent = args.gstPercent ?? existing.gst_percent ?? 18;
 
-  let items = existing.items;
-  let amount = Number(existing.amount);
-  let projectCost = existing.project_cost;
+      let items = existing.items;
+      let amount = Number(existing.amount);
+      let projectCost = existing.project_cost;
 
-  // Recalculate whenever items change, OR the GST setting/rate changes —
-  // previously this only ran when items were resent, so toggling GST
-  // alone (without touching items) silently did nothing.
-  if (args.items || args.includeGst !== undefined || args.gstPercent !== undefined) {
-    items = args.items
-      ? args.items.map((it) => {
-          const qty = Number(it.quantity) || 0;
-          const rate = Number(it.unitPrice) || 0;
-          return { description: it.description || "", qty, rate, total: qty * rate };
-        })
-      : existing.items;
+      // Recalculate whenever items change, OR the GST setting/rate changes —
+      // previously this only ran when items were resent, so toggling GST
+      // alone (without touching items) silently did nothing.
+      if (args.items || args.includeGst !== undefined || args.gstPercent !== undefined) {
+        items = args.items
+          ? args.items.map((it) => {
+            const qty = Number(it.quantity) || 0;
+            const rate = Number(it.unitPrice) || 0;
+            return { description: it.description || "", qty, rate, total: qty * rate };
+          })
+          : existing.items;
 
-    const subtotal = items.reduce((sum, i) => sum + i.total, 0);
-    const tax = includeGst ? Math.round(subtotal * (gstPercent / 100)) : 0;
-    amount = subtotal + tax;
-    projectCost = includeGst
-      ? `Project Cost: ₹${subtotal.toLocaleString()}\nGST (${gstPercent}%): ₹${tax.toLocaleString()}\nTotal Project Cost: ₹${amount.toLocaleString()}`
-      : `Project Cost: ₹${subtotal.toLocaleString()}\nTotal Project Cost: ₹${amount.toLocaleString()}`;
-  }
+        const subtotal = items.reduce((sum, i) => sum + i.total, 0);
+        const tax = includeGst ? Math.round(subtotal * (gstPercent / 100)) : 0;
+        amount = subtotal + tax;
+        projectCost = includeGst
+          ? `Project Cost: ₹${subtotal.toLocaleString()}\nGST (${gstPercent}%): ₹${tax.toLocaleString()}\nTotal Project Cost: ₹${amount.toLocaleString()}`
+          : `Project Cost: ₹${subtotal.toLocaleString()}\nTotal Project Cost: ₹${amount.toLocaleString()}`;
+      }
 
-         const merged = {
+      const merged = {
         id: existing.id,
+        quotationNumber: existing.quotation_number,   // NEW: keep the official number
+        sentAt: existing.sent_at,                     // NEW
+        versionHistory: existing.version_history,     // NEW
+        isTemplate: false,                            // NEW
         name: args.name ?? existing.name,
         company: args.company ?? existing.company,
         email: args.email ?? existing.email,
         phone: args.phone ?? existing.phone,
-        date: existing.date,
+        date: args.date ?? existing.date,
         validUntil: args.validUntil ?? existing.valid_until,
         status: args.status ?? existing.status,
         amount,
@@ -730,43 +875,49 @@ async function executeTool(name, args) {
         projectCost,
         paymentTerms: args.paymentTerms?.trim() || existing.payment_terms,
         terms: args.terms ? joinLines(args.terms) : existing.terms,
-        notes: args.notes ?? existing.notes,
+        notes: args.notes ?? existing.notes ?? "",
         items,
         customSections: args.customSections
           ? args.customSections.map((s) => {
-              const title = (s.title || "").replace(/\\n/g, "\n").trim();
-              if (s.type === "table") {
-                return {
-                  title,
-                  type: "table",
-                  columns: Array.isArray(s.columns) ? s.columns.map((c) => String(c).trim()) : [],
-                  rows: Array.isArray(s.rows)
-                    ? s.rows.map((row) => (Array.isArray(row) ? row.map((cell) => String(cell).trim()) : []))
-                    : [],
-                };
-              }
-              return { title, type: "paragraph", content: (s.content || "").replace(/\\n/g, "\n").trim() };
-            })
+            const title = (s.title || "").replace(/\\n/g, "\n").trim();
+            if (s.type === "table") {
+              return {
+                title,
+                type: "table",
+                columns: Array.isArray(s.columns) ? s.columns.map((c) => String(c).trim()) : [],
+                rows: Array.isArray(s.rows)
+                  ? s.rows.map((row) => (Array.isArray(row) ? row.map((cell) => String(cell).trim()) : []))
+                  : [],
+              };
+            }
+            return { title, type: "paragraph", content: (s.content || "").replace(/\\n/g, "\n").trim() };
+          })
           : existing.custom_sections,
         signature: existing.signature,
+
         accentColor: existing.accent_color,
         accentBg: existing.accent_bg,
-        issuerName: existing.issuer_name,
-        issuerAddress: existing.issuer_address,
-        issuerPhone: existing.issuer_phone,
-        issuerEmail: existing.issuer_email,
+        issuerName: args.issuerName ?? existing.issuer_name,
+        issuerAddress: args.issuerAddress ?? existing.issuer_address,
+        issuerPhone: args.issuerPhone ?? existing.issuer_phone,
+        issuerEmail: args.issuerEmail ?? existing.issuer_email,
         issuerContact: existing.issuer_contact,
         projectTitle: args.projectTitle ?? existing.project_title,
         clientAddress: args.clientAddress ?? existing.client_address,
         logo: existing.logo,
         templateStyle: existing.template_style,
-        costItems: items.map((i) => ({ name: i.description, amount: i.total })),
+        costItems: items.map((i, idx) => ({           // CHANGED: add ids
+          id: `item-${Date.now()}-${idx}`,
+          name: i.description,
+          amount: i.total,
+        })),
         includeGst,
+        gstMode,                                      // NEW
         gstPercent,
       };
       // isNew=false -> keeps the same QT-xxxx id/number, does not reserve a new one
-      const quotation = await quotationModel.saveQuotation(merged, false);
-      return quotation;
+      const quotation = await quotationModel.saveQuotation(merged, false, true);
+      return { ...quotation, id: quotation?.id ?? existing.id };
     }
 
     case "delete_quotation": {
@@ -800,7 +951,13 @@ async function executeTool(name, args) {
         id: crypto.randomUUID(),
         invoiceNo,
         buyerName: args.buyerName,
-        buyerCompanyName: args.buyerCompanyName || null,
+        // Only keep a company name if the user really gave one
+        // (ignore it when the AI just copied the person's name into it)
+        buyerCompanyName:
+          args.buyerCompanyName &&
+          args.buyerCompanyName.trim().toLowerCase() !== (args.buyerName || "").trim().toLowerCase()
+            ? args.buyerCompanyName.trim()
+            : null,
         buyerAddress: args.buyerAddress || null,
         buyerMobile: args.buyerMobile || null,
         buyerGSTIN: args.buyerGSTIN || null,
@@ -824,6 +981,12 @@ async function executeTool(name, args) {
         signature: "/signature.png",
         fromQuotationId: args.fromQuotationId || null,
       });
+      if (args.fromQuotationId) {
+        await quotationModel.addQuotationActivity(
+          args.fromQuotationId,
+          `Invoice ${invoiceNo} created by Nexa AI`
+        );
+      }
       return invoice;
     }
 
@@ -953,6 +1116,9 @@ async function generateAssistantReply(chatId) {
   });
 
   let replyText = "";
+  let mutationOk = false;
+  let mutationError = null;
+  const refs = []; // ADD THIS — collects {type, id, label} for anything created/updated this turn
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const response = await generateWithRetry({
@@ -975,11 +1141,35 @@ async function generateAssistantReply(chatId) {
     }
 
     const { name, args } = functionCallPart.functionCall;
+
+    // The AI wants to ask the user something: save it as a form and stop here.
+    if (name === "ask_user_questions") {
+      const questions = (Array.isArray(args.questions) ? args.questions : []).slice(0, 5);
+      const intro = String(args.intro || "I need a few details:");
+      replyText = `${intro}\n<!--form:${JSON.stringify({ questions })}-->`;
+      break;
+    }
+
     let toolResult;
     try {
       toolResult = await executeTool(name, args);
     } catch (err) {
+      console.error("Tool failed:", name, err);   // NEW
       toolResult = { error: err.message };
+    }
+
+    console.log(`[Nexa] tool ${name} ->`, toolResult?.error ? `ERROR: ${toolResult.error}` : "ok");
+
+    if (/^(create|update|delete)_/.test(name)) {
+      if (toolResult?.error) mutationError = toolResult.error;
+      else mutationOk = true;
+    }
+
+    // ADD THIS BLOCK — if this tool produced something viewable, remember it
+    const refBuilder = VIEWABLE_TOOLS[name];
+    if (refBuilder) {
+      const ref = refBuilder(toolResult);
+      if (ref) refs.push(ref);
     }
 
     contents.push({ role: "model", parts: [functionCallPart] });
@@ -989,8 +1179,24 @@ async function generateAssistantReply(chatId) {
     });
   }
 
+  if (mutationError && !mutationOk) {
+    replyText = `That didn't work: ${mutationError}`;
+  }
+
   if (!replyText) {
     replyText = "Done — let me know if you'd like anything else.";
+  }
+
+  console.log("[Nexa] refs collected this turn:", JSON.stringify(refs));
+
+  // ADD THIS BLOCK — append a hidden marker (never shown to the user as
+  // text) so the frontend can render "View Quotation" style buttons.
+  // Dedupe by type+id in case the same record was touched twice this turn.
+  if (refs.length) {
+    const uniqueRefs = Array.from(
+      new Map(refs.map((r) => [`${r.type}:${r.id}`, r])).values()
+    );
+    replyText += `\n<!--refs:${JSON.stringify(uniqueRefs)}-->`;
   }
 
   return chatModel.addMessage(chatId, "assistant", replyText);

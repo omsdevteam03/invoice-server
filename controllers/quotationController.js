@@ -1,11 +1,15 @@
 import {
-  getAllQuotations, saveQuotation, deleteQuotation,
+  getAllQuotations, saveQuotation, sendQuotation, deleteQuotation,
   getTrashedQuotations, restoreQuotation, permanentlyDeleteQuotation,
 } from '../models/quotationModel.js';
 
 function mapQuotationRow(q) {
   return {
-    id: q.id, name: q.name, company: q.company,
+    id: q.id,
+    quotationNumber: q.quotation_number || null,
+    sentAt: q.sent_at || null,
+    updatedAt: q.updated_at || null,
+    name: q.name, company: q.company,
     email: q.email, phone: q.phone, date: q.date,
     validUntil: q.valid_until, status: q.status, amount: Number(q.amount),
     timeline: q.timeline, description: q.description,
@@ -20,6 +24,7 @@ function mapQuotationRow(q) {
     issuerContact: q.issuer_contact, projectTitle: q.project_title,
     clientAddress: q.client_address, logo: q.logo,
     templateStyle: q.template_style,
+    activityLog: q.activity_log || [],
 costItems: q.cost_items || [], includeGst: q.include_gst !== false, gstPercent: q.gst_percent, gstMode: q.gst_mode || (q.include_gst === false ? 'without' : 'with'),  };
 }
 
@@ -37,6 +42,16 @@ export const upsertQuotation = async (req, reply) => {
     const { isNew, ...body } = req.body;
     const saved = await saveQuotation(body, Boolean(isNew));
     return reply.send(mapQuotationRow(saved));
+  } catch (err) {
+    return reply.status(500).send({ message: 'Server error', error: err.message });
+  }
+};
+
+export const sendQuotationHandler = async (req, reply) => {
+  try {
+    const sent = await sendQuotation(req.params.id);
+    if (!sent) return reply.status(404).send({ message: 'Quotation not found' });
+    return reply.send(mapQuotationRow(sent));
   } catch (err) {
     return reply.status(500).send({ message: 'Server error', error: err.message });
   }

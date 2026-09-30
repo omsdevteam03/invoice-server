@@ -34,13 +34,47 @@ const reserveNextQuotationNumber = async (client) => {
   return resets ? `${prefix}-${yearToUse}-${seqStr}` : `${prefix}-${seqStr}`;
 };
 
-export const saveQuotation = async (q, isNew) => {
+export const saveQuotation = async (q, isNew, byAi = false) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    const id = isNew ? await reserveNextQuotationNumber(client) : q.id;
-    if (!id) throw new Error('Missing quotation id for update');
+    const id = q.id;
+    if (!id) throw new Error('Missing quotation id');
+
+    // Only /send may put a quotation into "Sent" — if a client ever posts
+    // status: "Sent" without a quotation_number already reserved, fall
+    // back to Draft instead of allowing a numberless "Sent" quotation.
+    let status = q.status;
+    // The AI asked for "Sent": save as Draft first, then run the real send flow below
+    const aiWantsSend = byAi && q.status === 'Sent';
+    // Any status beyond "Draft" (Sent, Approved, Rejected, Expired) implies
+    // an official quotation number exists. If it doesn't yet, force back
+    // to Draft rather than letting a numberless quotation carry a status
+    // that should only be reachable after Send.
+    if (status && status !== 'Draft') {
+      const { rows: existingRows } = await client.query(
+        'SELECT quotation_number FROM quotations WHERE id = $1',
+        [id]
+      );
+      if (!existingRows[0]?.quotation_number) {
+        status = 'Draft';
+      }
+    }
+        // ── Activity log: decided by the server, never trusted from the browser ──
+    const { rows: prevRows } = await client.query(
+      'SELECT status, activity_log FROM quotations WHERE id = $1 FOR UPDATE',
+      [id]
+    );
+    const prev = prevRows[0];
+    const prevLog = Array.isArray(prev?.activity_log) ? prev.activity_log : [];
+    const by = byAi ? ' by Nexa AI' : '';
+    let logMessage;
+    if (!prev) logMessage = `Quotation created${by}`;
+    else if (status && status !== prev.status)
+      logMessage = status === 'Approved' ? `Quotation approved${by}` : `Status changed to ${status}${by}`;
+    else logMessage = `Quotation edited${by}`;
+    const activityLog = [...prevLog, { message: logMessage, date: new Date().toISOString() }];
 
      const result = await client.query(
   `INSERT INTO quotations (
@@ -50,10 +84,10 @@ export const saveQuotation = async (q, isNew) => {
     custom_sections, signature,
     accent_color, accent_bg, issuer_name, issuer_address, issuer_phone,
     issuer_email, issuer_contact, project_title, client_address, logo,
-    template_style, cost_items, include_gst, gst_percent, gst_mode
+    template_style, cost_items, include_gst, gst_percent, gst_mode, activity_log
   ) VALUES (
-    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,
-    $23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37
+    $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+    $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38
   )
   ON CONFLICT (id) DO UPDATE SET
     name=$2, company=$3, email=$4, phone=$5, date=$6, valid_until=$7,
@@ -64,20 +98,78 @@ export const saveQuotation = async (q, isNew) => {
     issuer_address=$26, issuer_phone=$27, issuer_email=$28, issuer_contact=$29,
     project_title=$30, client_address=$31, logo=$32, template_style=$33,
     cost_items=$34, include_gst=$35, gst_percent=$36, gst_mode=$37,
-    deleted_at=NULL
+    activity_log=$38,
+    deleted_at=NULL, updated_at=NOW()
   RETURNING *`,
   [
     id, q.name, q.company, q.email, q.phone, q.date, q.validUntil,
-    q.status, q.amount, q.timeline, q.description, q.scopeOfWork,
+    status, q.amount, q.timeline, q.description, q.scopeOfWork,
     q.deliverables, q.technologyUsed, q.timelineDesc, q.projectCost,
     q.paymentTerms, q.terms, q.notes,
     JSON.stringify(q.items), JSON.stringify(q.customSections || []), q.signature,
     q.accentColor, q.accentBg, q.issuerName, q.issuerAddress, q.issuerPhone,
     q.issuerEmail, q.issuerContact, q.projectTitle, q.clientAddress, q.logo,
     q.templateStyle, JSON.stringify(q.costItems || []), q.includeGst !== false, q.gstPercent ?? 18,
-    q.gstMode || (q.includeGst === false ? 'without' : 'with')
+    q.gstMode || (q.includeGst === false ? 'without' : 'with'),
+    JSON.stringify(activityLog)
   ]
 );
+
+    await client.query('COMMIT');
+
+    // Assign the official number and set status to Sent via the proper path
+    if (aiWantsSend && !result.rows[0].quotation_number) {
+      const sent = await sendQuotation(id);
+      return sent || result.rows[0];
+    }
+    return result.rows[0];
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+};
+
+// NEW FUNCTION — add this right after saveQuotation.
+// The only place an official QT-xxxx number is ever assigned. Locks the
+// row first so a double-click can't race with itself; idempotent if it's
+// already been sent.
+export const sendQuotation = async (id) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows } = await client.query(
+      'SELECT id, quotation_number FROM quotations WHERE id = $1 AND deleted_at IS NULL FOR UPDATE',
+      [id]
+    );
+    const existing = rows[0];
+    if (!existing) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+
+    if (existing.quotation_number) {
+      await client.query('COMMIT');
+      const already = await pool.query('SELECT * FROM quotations WHERE id = $1', [id]);
+      return already.rows[0];
+    }
+
+    const quotationNumber = await reserveNextQuotationNumber(client);
+
+    const result = await client.query(
+      `UPDATE quotations
+       SET quotation_number = $1, status = 'Sent', sent_at = NOW(),
+           activity_log = COALESCE(activity_log, '[]'::jsonb) || $3::jsonb
+       WHERE id = $2
+       RETURNING *`,
+      [
+        quotationNumber,
+        id,
+        JSON.stringify([{ message: `Quotation sent to customer (${quotationNumber})`, date: new Date().toISOString() }]),
+      ]
+    );
 
     await client.query('COMMIT');
     return result.rows[0];
@@ -87,6 +179,16 @@ export const saveQuotation = async (q, isNew) => {
   } finally {
     client.release();
   }
+};
+// Appends one line to a quotation's activity log (used e.g. when an invoice is created from it)
+export const addQuotationActivity = async (id, message) => {
+  if (!id) return;
+  await pool.query(
+    `UPDATE quotations
+     SET activity_log = COALESCE(activity_log, '[]'::jsonb) || $2::jsonb
+     WHERE id = $1`,
+    [id, JSON.stringify([{ message, date: new Date().toISOString() }])]
+  );
 };
 
 export const deleteQuotation = async (id) => {

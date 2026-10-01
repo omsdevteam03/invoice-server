@@ -133,8 +133,10 @@ const SYSTEM_INSTRUCTION =
   "then call update_quotation with projectTitle set to exactly the new name they gave. Do NOT " +
   "use the name field for this, because name is the client's contact person. Only change " +
   "name/company when the user says customer/client name. " +
-  "LANGUAGE: If the user's message is in Tamil (Tamil script, or Tamil written in English letters), " +
-  "write your chat reply to them in natural, simple Tamil script (தமிழ்). Keep numbers, ₹ amounts, " +
+  "LANGUAGE: Reply in the same language the user writes in. Supported: Tamil, Hindi, Telugu, " +
+  "Malayalam, Kannada, Bengali, Marathi, Gujarati and English. This includes those languages " +
+  "written in English letters (e.g. Tamil or Hindi typed in English letters): reply in the " +
+  "language's own native script, in natural, simple wording. Keep numbers, ₹ amounts, " +
   "invoice/customer IDs and names of people/companies exactly as they are. This applies ONLY to your " +
   "chat reply — the content you save inside quotations and invoices must still be professional " +
   "English, as instructed above. If the user writes in English, reply in English. " +

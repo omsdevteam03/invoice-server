@@ -14,12 +14,31 @@ const reserveNextQuotationNumber = async (client) => {
   const s = rows[0];
   if (!s) throw new Error('Invoice settings not configured');
 
-  const currentYear = new Date().getFullYear();
+   const currentYear = new Date().getFullYear();
   const resets = s.quotation_yearly_reset;
   const yearChanged = resets && s.quotation_current_year !== currentYear;
 
-  const nextSeq = yearChanged ? 1 : (Number(s.quotation_current_sequence) || 0) + 1;
   const yearToUse = resets ? currentYear : s.quotation_current_year;
+  const prefix = (s.quotation_prefix || 'QT').trim().replace(/-+$/, '');
+  const len = Math.max(1, Number(s.quotation_number_length) || 4);
+
+  const formatNumber = (seq) => {
+    const seqStr = String(seq).padStart(len, '0');
+    return resets ? `${prefix}-${yearToUse}-${seqStr}` : `${prefix}-${seqStr}`;
+  };
+
+  let nextSeq = yearChanged ? 1 : (Number(s.quotation_current_sequence) || 0) + 1;
+
+  // Skip numbers already in use — this includes trashed quotations,
+  // which still hold their quotation_number.
+  while (true) {
+    const { rowCount } = await client.query(
+      'SELECT 1 FROM quotations WHERE quotation_number = $1',
+      [formatNumber(nextSeq)]
+    );
+    if (rowCount === 0) break;
+    nextSeq += 1;
+  }
 
   await client.query(
     `UPDATE invoice_settings
@@ -28,10 +47,7 @@ const reserveNextQuotationNumber = async (client) => {
     [nextSeq, yearToUse]
   );
 
-  const prefix = (s.quotation_prefix || 'QT').trim().replace(/-+$/, '');
-  const len = Math.max(1, Number(s.quotation_number_length) || 4);
-  const seqStr = String(nextSeq).padStart(len, '0');
-  return resets ? `${prefix}-${yearToUse}-${seqStr}` : `${prefix}-${seqStr}`;
+  return formatNumber(nextSeq);
 };
 
 export const saveQuotation = async (q, isNew, byAi = false) => {

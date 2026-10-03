@@ -104,7 +104,8 @@ const SYSTEM_INSTRUCTION =
   "issues from the user's request rather than carrying them into the quotation. " +
   "When creating an invoice, " +
   "pass type: 'Proforma' only if the user explicitly says proforma/PI — otherwise leave it as " +
-  "the default Final invoice. " +
+  "the default Final invoice. Invoices are created WITHOUT GST by default: set includeGst to " +
+  "true only if the user explicitly asks for GST or tax. " +
   "For invoices and customers, never make up a company name: if the user gave only a name, " +
   "leave buyerCompanyName empty. " +
   "Before editing or deleting anything, always call the matching search/find " +
@@ -140,6 +141,9 @@ const SYSTEM_INSTRUCTION =
   "invoice/customer IDs and names of people/companies exactly as they are. This applies ONLY to your " +
   "chat reply — the content you save inside quotations and invoices must still be professional " +
   "English, as instructed above. If the user writes in English, reply in English. " +
+  "To approve or send a quotation, call search_quotations, then approve_quotation. To make a " +
+  "proforma/invoice from that quotation, call create_invoice with fromQuotationId only AFTER " +
+  "approve_quotation succeeded, and report the quotation_number it returned. " +
   "IMPORTANT: Never say you created, updated, or deleted anything unless the matching tool " +
   "call ran successfully in this same turn. When the user has answered your questions, call " +
   "the tool immediately instead of describing what you will do. If a tool returns an error, " +
@@ -405,6 +409,16 @@ const TOOLS = [
         },
       },
       {
+        name: "approve_quotation",
+        description: "Approve a quotation. If it is still a draft, this first sends it (assigns the official QT number), then sets its status to Approved. Use this whenever the user says approve or accept. ALWAYS use this instead of update_quotation for approving. Call search_quotations first to get the ID.",        parameters: {
+          type: "OBJECT",
+          properties: {
+            quotationId: { type: "STRING", description: "ID of the quotation, from search_quotations" },
+          },
+          required: ["quotationId"],
+        },
+      },
+      {
         name: "delete_quotation",
         description: "Permanently delete a quotation.",
         parameters: {
@@ -452,6 +466,7 @@ const TOOLS = [
             },
             dueDate: { type: "STRING", description: "YYYY-MM-DD" },
             fromQuotationId: { type: "STRING", description: "If converting an existing quotation to an invoice" },
+            includeGst: { type: "BOOLEAN", description: "Default false. Set to true ONLY if the user explicitly asks for GST/tax to be added to the invoice." },
           },
           required: ["buyerName", "items"],
         },
@@ -824,6 +839,10 @@ async function executeTool(name, args) {
       const existing = await findQuotationById(args.quotationId);
       if (!existing) return { error: "Quotation not found. Run search_quotations again to confirm the ID." };
 
+      if (args.status && /^(approved|accepted|sent)$/i.test(args.status) && !existing.quotation_number) {
+        return { error: "This is a draft. Use approve_quotation instead of changing the status." };
+      }
+
       const gstMode = args.includeGst !== undefined
         ? (args.includeGst ? "with" : "without")
         : (existing.gst_mode || (existing.include_gst === false ? "without" : "with"));
@@ -922,6 +941,31 @@ async function executeTool(name, args) {
       return { ...quotation, id: quotation?.id ?? existing.id };
     }
 
+    case "approve_quotation": {
+      const existing = await findQuotationById(args.quotationId);
+      if (!existing) return { error: "Quotation not found. Run search_quotations again to confirm the ID." };
+
+      // 1. Draft -> assign the QT number (same as the Send button).
+      //    Skip if it already has a number, so it is never numbered twice.
+      if (!existing.quotation_number) {
+        await quotationModel.sendQuotation(args.quotationId);   // <-- your real send function
+      }
+
+      // 2. Set the status to Approved (keeps the QT number)
+      const updated = await executeTool("update_quotation", {
+        quotationId: args.quotationId,
+        status: "Approved",
+      });
+      if (updated?.error) return updated;
+
+      // 3. Re-read and verify both things really happened
+      const saved = await findQuotationById(args.quotationId);
+      if (!saved?.quotation_number || saved.status !== "Approved") {
+        return { error: `Approval failed (number: ${saved?.quotation_number || "none"}, status: ${saved?.status}).` };
+      }
+      return { id: saved.id, quotation_number: saved.quotation_number, status: saved.status };
+    }
+
     case "delete_quotation": {
       const existing = await findQuotationById(args.quotationId);
       if (!existing) return { error: "Quotation not found. Run search_quotations again to confirm the ID." };
@@ -939,8 +983,15 @@ async function executeTool(name, args) {
       return { total: all.length, byStatus: counts };
     }
     case "create_invoice": {
+      if (args.fromQuotationId) {
+        const srcQuotation = await findQuotationById(args.fromQuotationId);
+        if (!srcQuotation) return { error: "Source quotation not found." };
+        if (!srcQuotation.quotation_number) {
+          return { error: "That quotation is still a draft with no QT number. Call approve_quotation first, then create the invoice." };
+        }
+      }
       const normalizedItems = toInvoiceItems(args.items);
-      const total = normalizedItems.reduce((sum, i) => sum + i.amount, 0);
+      const subtotal = normalizedItems.reduce((sum, i) => sum + i.amount, 0);
       const type = args.type === "Proforma" ? "Proforma" : "Final";
       const invoiceNo = await reserveNextInvoiceNumber(type);
 
@@ -948,6 +999,11 @@ async function executeTool(name, args) {
         settingsModel.getInvoiceSettings(),
         settingsModel.getCompanySettings(),
       ]);
+            // GST is OFF unless the user explicitly asked for it
+      const includeGst = args.includeGst === true;
+      const gstPercent = invoiceSettings?.gst_percent ?? 18;
+      const tax = includeGst ? Math.round(subtotal * (gstPercent / 100)) : 0;
+      const total = subtotal + tax;
 
       const invoice = await invoiceModel.saveInvoice({
         id: crypto.randomUUID(),
@@ -966,8 +1022,8 @@ async function executeTool(name, args) {
         date: new Date().toISOString().slice(0, 10),
         dueDate: args.dueDate || null,
         status: "Unpaid",
-        gstType: "With GST",
-        gstPercent: invoiceSettings?.gst_percent ?? 18,
+        gstType: includeGst ? "With GST" : "No GST",
+        gstPercent,
         items: normalizedItems,
         amountPaid: 0,
         total,

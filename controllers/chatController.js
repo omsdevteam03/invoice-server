@@ -71,13 +71,9 @@ const SYSTEM_INSTRUCTION =
   "for a question, never ask it again: use a sensible default or leave that field blank, and " +
   "go ahead with the tool call. Before creating a quotation or invoice, always call " +
   "search_customers first to check if the customer already exists — only call create_customer " +
-  "if they don't. When creating a quotation, ALWAYS set templateId. If the user names a style " +
-  "(classic/formal, creative, elegant/bold, modern, minimal, corporate), use that one. If they " +
-  "don't, choose the best fit for the project: proj-modern for websites, apps, software and " +
-  "tech; proj-creative for design, branding, marketing and media; proj-corporate for " +
-  "enterprise/B2B work; proj-classic for legal, finance and other formal work; proj-minimal " +
-  "for small or simple jobs; proj-elegant for premium or high-end work. Use proj-custom only " +
-  "if the user asks for a plain, custom or default layout. Always include a short, " +
+  "if they don't. When creating a quotation, ALWAYS set templateId to proj-custom (the " +
+  "'Customize Your Own' default template), even if the project type suggests another style. " +
+  "Never choose any other template. Always include a short, " +
   "clear project description summarizing what the quotation is for, even if the user didn't " +
   "explicitly dictate one — infer it from the conversation and the items being quoted. When " +
   "creating a quotation, you must also write scopeOfWork, deliverables, technologyUsed, and " +
@@ -99,7 +95,8 @@ const SYSTEM_INSTRUCTION =
   "terms, and a closing summary/approval section. For an e-commerce, SaaS, or app-style project, " +
   "always include a customer-facing features table and a separate admin/management features " +
   "table, each with 10+ realistic rows for that specific project type — never leave a feature " +
-  "table thin or generic. Always write in clean, professional, grammatically correct English " +
+  "table thin or generic. Every table row must have every cell filled with real content — " +
+  "never leave a cell empty. Always write in clean, professional, grammatically correct English " +
   "regardless of how the user's own prompt is worded — correct any grammar, spelling, or phrasing " +
   "issues from the user's request rather than carrying them into the quotation. " +
   "When creating an invoice, " +
@@ -144,13 +141,23 @@ const SYSTEM_INSTRUCTION =
   "To approve or send a quotation, call search_quotations, then approve_quotation. To make a " +
   "proforma/invoice from that quotation, call create_invoice with fromQuotationId only AFTER " +
   "approve_quotation succeeded, and report the quotation_number it returned. " +
-  "IMPORTANT: Never say you created, updated, or deleted anything unless the matching tool " +
+  "IMPORTANT: Every new request needs its own fresh tool calls. Never copy a previous reply's " +
+  "wording or assume something from earlier in the chat was done for this request. " +
+  "Never say you created, updated, or deleted anything unless the matching tool " +
   "call ran successfully in this same turn. When the user has answered your questions, call " +
   "the tool immediately instead of describing what you will do. If a tool returns an error, " +
   "tell the user what went wrong. " +
   "If asked your name, say you're __AI_NAME__.";
 
 const MAX_TOOL_ROUNDS = 6;
+
+// Phrases/IDs that mean the AI is claiming it did something
+const CLAIM_REGEX = /(successfully (created|updated|approved)|\bI have (successfully )?(created|updated|approved)|has been (successfully )?(created|updated|approved))/i;
+
+// Removes the hidden <!--refs--> / <!--form--> markers before history goes to Gemini
+function stripMarkers(content = "") {
+  return content.replace(/\n?<!--(refs|form):[\s\S]*?-->/g, "").trim();
+}
 
 // Detects the "![image](data:...)\n<text>" format the frontend saves for
 // image messages. Returns { imageDataUrl, text }. If there's no image,
@@ -255,7 +262,7 @@ const TOOLS = [
             customerId: { type: "STRING", description: "ID of an existing customer, from search_customers or create_customer" },
             templateId: {
               type: "STRING",
-              description: "Which quotation template style to use. One of: proj-custom, proj-classic, proj-creative, proj-elegant, proj-modern, proj-minimal, proj-corporate. Always provide this. Use the style the user asked for; otherwise pick the best fit for the project type. Use proj-custom only if the user explicitly wants a plain/custom layout.",
+              description: "Always 'proj-custom' (the 'Customize Your Own' default template).",
             },
             items: {
               type: "ARRAY",
@@ -318,8 +325,14 @@ const TOOLS = [
                   },
                   rows: {
                     type: "ARRAY",
-                    items: { type: "ARRAY", items: { type: "STRING" } },
-                    description: "Used when type is 'table'. Each inner array is one row, with one string per column, in the same order as 'columns'.",
+                    items: {
+                      type: "OBJECT",
+                      properties: {
+                        cells: { type: "ARRAY", items: { type: "STRING" }, description: "One string per column, in the same order as 'columns'." },
+                      },
+                      required: ["cells"],
+                    },
+                    description: "Used when type is 'table'. One object per row with a 'cells' array. Every cell must be filled in; never leave a cell empty.",
                   },
                 },
                 required: ["title"],
@@ -399,7 +412,14 @@ const TOOLS = [
                   type: { type: "STRING", description: "'paragraph' (default) or 'table'." },
                   content: { type: "STRING" },
                   columns: { type: "ARRAY", items: { type: "STRING" } },
-                  rows: { type: "ARRAY", items: { type: "ARRAY", items: { type: "STRING" } } },
+                  rows: {
+                    type: "ARRAY",
+                    items: {
+                      type: "OBJECT",
+                      properties: { cells: { type: "ARRAY", items: { type: "STRING" } } },
+                      required: ["cells"],
+                    },
+                  },
                 },
                 required: ["title"],
               },
@@ -535,6 +555,7 @@ const quotationLabel = (r) =>
 const VIEWABLE_TOOLS = {
   create_quotation: (result) => (result?.id ? { type: "quotation", id: result.id, label: quotationLabel(result) } : null),
   update_quotation: (result) => (result?.id ? { type: "quotation", id: result.id, label: quotationLabel(result) } : null),
+  approve_quotation: (result) => (result?.id ? { type: "quotation", id: result.id, label: quotationLabel(result) } : null),
   create_invoice: (result) => (result?.id ? { type: "invoice", id: result.id, label: result.invoice_no || result.id } : null),
   update_invoice: (result) => (result?.id ? { type: "invoice", id: result.id, label: result.invoice_no || result.id } : null),
   create_customer: (result) => (result?.id ? { type: "customer", id: result.id, label: result.name } : null),
@@ -563,6 +584,34 @@ function joinLines(value) {
     return value.replace(/\\n/g, "\n").trim();
   }
   return "";
+}
+
+// Turns whatever the model sent for one table row into an array of cell strings.
+function normalizeRow(row, columns) {
+  const clean = (v) => String(v ?? "").trim();
+  if (Array.isArray(row)) return row.map(clean);
+  if (typeof row === "string") return row.split("|").map(clean);
+  if (row && typeof row === "object") {
+    if (Array.isArray(row.cells)) return row.cells.map(clean);
+    const byName = columns.map((col) => row[col]);          // keyed by column name
+    if (byName.some((v) => v !== undefined)) return byName.map(clean);
+    return Object.values(row).map(clean);
+  }
+  return [];
+}
+
+function normalizeCustomSections(sections = []) {
+  return sections.map((s) => {
+    const title = (s.title || "").replace(/\\n/g, "\n").trim();
+    if (s.type === "table") {
+      const columns = Array.isArray(s.columns) ? s.columns.map((c) => String(c).trim()) : [];
+      const rows = Array.isArray(s.rows)
+        ? s.rows.map((r) => normalizeRow(r, columns)).filter((r) => r.some(Boolean)) // drop blank rows
+        : [];
+      return { title, type: "table", columns, rows };
+    }
+    return { title, type: "paragraph", content: (s.content || "").replace(/\\n/g, "\n").trim() };
+  });
 }
 
 function addDays(days) {
@@ -724,9 +773,8 @@ async function executeTool(name, args) {
         settingsModel.getInvoiceSettings(),
       ]);
 
-      const template = getTemplate(
-        args.templateId || pickTemplateFallback(`${args.projectTitle || ""} ${args.description || ""}`)
-      );
+      // AI-created quotations always use the default "Customize Your Own" template
+      const template = getTemplate(DEFAULT_TEMPLATE_ID);
 
       const items = args.items.map((it) => {
         const qty = Number(it.quantity) || 0;
@@ -773,24 +821,7 @@ async function executeTool(name, args) {
           paymentTerms: invoiceSettingsRow?.default_payment_terms || STANDARD_PAYMENT_TERMS,
           terms: STANDARD_TERMS,
           items,
-          customSections: (args.customSections || []).map((s) => {
-            const title = (s.title || "").replace(/\\n/g, "\n").trim();
-            if (s.type === "table") {
-              return {
-                title,
-                type: "table",
-                columns: Array.isArray(s.columns) ? s.columns.map((c) => String(c).trim()) : [],
-                rows: Array.isArray(s.rows)
-                  ? s.rows.map((row) => (Array.isArray(row) ? row.map((cell) => String(cell).trim()) : []))
-                  : [],
-              };
-            }
-            return {
-              title,
-              type: "paragraph",
-              content: (s.content || "").replace(/\\n/g, "\n").trim(),
-            };
-          }),
+          customSections: normalizeCustomSections(args.customSections || []),
           signature: "/signature.png",
           accentColor: null,
           accentBg: null,
@@ -899,20 +930,7 @@ async function executeTool(name, args) {
         notes: args.notes ?? existing.notes ?? "",
         items,
         customSections: args.customSections
-          ? args.customSections.map((s) => {
-            const title = (s.title || "").replace(/\\n/g, "\n").trim();
-            if (s.type === "table") {
-              return {
-                title,
-                type: "table",
-                columns: Array.isArray(s.columns) ? s.columns.map((c) => String(c).trim()) : [],
-                rows: Array.isArray(s.rows)
-                  ? s.rows.map((row) => (Array.isArray(row) ? row.map((cell) => String(cell).trim()) : []))
-                  : [],
-              };
-            }
-            return { title, type: "paragraph", content: (s.content || "").replace(/\\n/g, "\n").trim() };
-          })
+          ? normalizeCustomSections(args.customSections)
           : existing.custom_sections,
         signature: existing.signature,
 
@@ -1140,7 +1158,8 @@ function getUserId(request) {
 // returns that assistant message. Shared by sendMessage (new message) and
 // editMessage (regenerating after an edit), so the two flows can never
 // drift apart.
-async function generateAssistantReply(chatId) {
+async function generateAssistantReply(chatId, aiName) {
+  const systemInstruction = SYSTEM_INSTRUCTION.replaceAll("__AI_NAME__", cleanAiName(aiName));
   const history = await chatModel.getMessages(chatId);
   const lastIndex = history.length - 1;
 
@@ -1169,7 +1188,7 @@ async function generateAssistantReply(chatId) {
     }
     return {
       role: m.role === "assistant" ? "model" : "user",
-      parts: [{ text: m.content }],
+      parts: [{ text: stripMarkers(m.content) }],
     };
   });
 
@@ -1177,13 +1196,16 @@ async function generateAssistantReply(chatId) {
   let mutationOk = false;
   let mutationError = null;
   const refs = []; // ADD THIS — collects {type, id, label} for anything created/updated this turn
+  let toolCalls = 0;
+  let nudges = 0;
+  let deleteOk = false;
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const response = await generateWithRetry({
       model: "gemini-flash-lite-latest",
       contents,
       config: {
-        systemInstruction: SYSTEM_INSTRUCTION,
+        systemInstruction,
         maxOutputTokens: 4000,
         tools: TOOLS,
       },
@@ -1194,7 +1216,30 @@ async function generateAssistantReply(chatId) {
     const functionCallPart = parts.find((p) => p.functionCall);
 
     if (!functionCallPart) {
-      replyText = response.text || "";
+      const text = response.text || "";
+
+      // The AI claims success, but nothing was really created/updated (no record to link)
+      if (refs.length === 0 && !deleteOk && CLAIM_REGEX.test(text)) {
+        if (nudges < 2) {
+          nudges++;
+          console.warn("[Nexa] claimed success without a real result, retrying");
+          contents.push({ role: "model", parts: [{ text }] });
+          contents.push({
+            role: "user",
+            parts: [{
+              text:
+                "Nothing has been created or updated yet in this turn. " +
+                "Call the required tool(s) now (search_customers first if needed). " +
+                "Never claim success without a tool result.",
+            }],
+          });
+          continue;
+        }
+        replyText = "Sorry, I couldn't complete that. Please send the request again.";
+        break;
+      }
+
+      replyText = text;
       break;
     }
 
@@ -1208,17 +1253,27 @@ async function generateAssistantReply(chatId) {
       break;
     }
 
+    toolCalls++;
     let toolResult;
     try {
       toolResult = await executeTool(name, args);
     } catch (err) {
       console.error("Tool failed:", name, err);   // NEW
       toolResult = { error: err.message };
+
+      // The quotation may have been saved before the error happened.
+      if (name === "create_quotation") {
+        const all = await quotationModel.getAllQuotations();
+        const found = all.find((q) => q.project_title === args.projectTitle);
+        if (found) toolResult = { ...found, id: found.id };
+      }
     }
 
-    console.log(`[Nexa] tool ${name} ->`, toolResult?.error ? `ERROR: ${toolResult.error}` : "ok");
+    console.log(`[Nexa] tool ${name} ->`, toolResult?.error ? `ERROR: ${toolResult.error}` : `ok (id: ${toolResult?.id})`);
 
-    if (/^(create|update|delete)_/.test(name)) {
+    if (/^delete_/.test(name) && !toolResult?.error) deleteOk = true;
+
+    if (/^(create|update|delete|approve)_/.test(name)) {
       if (toolResult?.error) mutationError = toolResult.error;
       else mutationOk = true;
     }
@@ -1304,7 +1359,7 @@ export async function deleteChat(request, reply) {
 export async function sendMessage(request, reply) {
   const userId = getUserId(request);
   const { chatId } = request.params;
-  const { content, image } = request.body;
+  const { content, image, aiName } = request.body;
   const text = (content || "").trim();
 
   if (!text && !image) {
@@ -1321,7 +1376,7 @@ export async function sendMessage(request, reply) {
     const savedContent = image ? `![image](${image})\n${text}` : text;
     const userMessage = await chatModel.addMessage(chatId, "user", savedContent);
 
-    const assistantMessage = await generateAssistantReply(chatId);
+    const assistantMessage = await generateAssistantReply(chatId, aiName);
 
     let updatedChat = chat;
     if (priorCount === 0) {
@@ -1342,7 +1397,7 @@ export async function sendMessage(request, reply) {
 export async function editMessage(request, reply) {
   const userId = getUserId(request);
   const { chatId, messageId } = request.params;
-  const { content, image } = request.body;
+  const { content, image, aiName } = request.body;
   const text = (content || "").trim();
 
   if (!text && !image) {
@@ -1367,7 +1422,7 @@ export async function editMessage(request, reply) {
     // Rewind the conversation: drop the old AI reply and anything after it.
     await chatModel.deleteMessagesAfter(chatId, messageId);
 
-    const assistantMessage = await generateAssistantReply(chatId);
+    const assistantMessage = await generateAssistantReply(chatId, aiName);
 
     return reply.send({ chat, userMessage, assistantMessage });
   } catch (err) {

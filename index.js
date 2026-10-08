@@ -12,14 +12,16 @@ import settingsRoutes from './routes/settingsRoutes.js';
 import cron from 'node-cron';
 import { getBackupSettings, markBackupRun, createBackupFile } from './models/settingsModel.js';
 import chatRoutes from "./routes/chatRoutes.js";
+import usersRoutes from './routes/usersRoutes.js';
 import { purgeOldTrashedCustomers } from './models/customerModel.js';
 import { purgeOldTrashedInvoices } from './models/invoiceModel.js';
 import { purgeOldTrashedQuotations } from './models/quotationModel.js';
+
 const fastify = Fastify({ logger: true, bodyLimit: 10 * 1024 * 1024 }); // 10MB — up from Fastify's 1MB default, needed for base64 image messages in chat
 await fastify.register(cors, {
   origin: process.env.CLIENT_URL || '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
 });
 
 // Multipart support — required for file uploads (e.g. backup restore)
@@ -37,7 +39,7 @@ fastify.register(customerRoutes, { prefix: '/api/customers' });
 fastify.register(expenseRoutes, { prefix: '/api/expenses' });
 fastify.register(settingsRoutes, { prefix: '/api/settings' });
 fastify.register(chatRoutes, { prefix: '/api/chat' });
-
+fastify.register(usersRoutes, { prefix: '/api/users' });
 // Root
 fastify.get('/', async () => ({ message: 'Server is running!' }));
 

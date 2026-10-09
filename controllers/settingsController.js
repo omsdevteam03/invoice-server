@@ -1,6 +1,8 @@
 import bcrypt from 'bcryptjs';
 import fs from 'fs';
+import pool from '../config/db.js';
 import {
+  getCompanyForUser,
   getCompanySettings,
   getCompanySettingsById,
   listCompanySettings,
@@ -93,7 +95,7 @@ const mapBackupSettings = (row) => ({
 
 export const getCompany = async (req, reply) => {
   try {
-    const row = await getCompanySettings();
+    const row = await getCompanyForUser(req.companyIds);
     if (!row) return reply.status(404).send({ message: 'Company settings not found' });
     return reply.send(mapCompany(row));
   } catch (err) {
@@ -104,9 +106,9 @@ export const getCompany = async (req, reply) => {
 
 export const updateCompany = async (req, reply) => {
   try {
-    const active = await getCompanySettings();
-    if (!active) return reply.status(404).send({ message: 'No active company profile found' });
-    const saved = await saveCompanySettingsRowById(active.id, req.body);
+    const current = await getCompanyForUser(req.companyIds);
+    if (!current) return reply.status(404).send({ message: 'No company profile found' });
+    const saved = await saveCompanySettingsRowById(current.id, req.body);
     return reply.send(mapCompany(saved));
   } catch (err) {
     req.log.error(err);
@@ -118,7 +120,7 @@ export const updateCompany = async (req, reply) => {
 
 export const listCompanies = async (req, reply) => {
   try {
-    const rows = await listCompanySettings();
+    const rows = await listCompanySettings(req.user.role === 'Admin' ? null : req.companyIds);
     return reply.send(rows.map(mapCompany));
   } catch (err) {
     req.log.error(err);
@@ -128,7 +130,11 @@ export const listCompanies = async (req, reply) => {
 
 export const createCompany = async (req, reply) => {
   try {
-    const saved = await createCompanySettingsRow(req.body);
+    const name = (req.body?.companyName || '').trim();
+    if (!name) return reply.status(400).send({ message: 'Enter the company name.' });
+    const dup = await pool.query('SELECT 1 FROM company_settings WHERE LOWER(company_name) = LOWER($1)', [name]);
+    if (dup.rowCount) return reply.status(409).send({ message: 'A company with this name already exists.' });
+    const saved = await createCompanySettingsRow({ ...req.body, companyName: name });
     return reply.status(201).send(mapCompany(saved));
   } catch (err) {
     req.log.error(err);
@@ -138,7 +144,10 @@ export const createCompany = async (req, reply) => {
 
 export const updateCompanyById = async (req, reply) => {
   try {
-    const { id } = req.params;
+     const { id } = req.params;
+    if (req.user.role !== 'Admin' && !req.companyIds.includes(Number(id))) {
+      return reply.status(403).send({ message: 'No access to this company.' });
+    }
     const existing = await getCompanySettingsById(id);
     if (!existing) return reply.status(404).send({ message: 'Company profile not found' });
     const saved = await saveCompanySettingsRowById(id, req.body);
@@ -163,7 +172,20 @@ export const activateCompany = async (req, reply) => {
 
 export const deleteCompany = async (req, reply) => {
   try {
-    const { id } = req.params;
+   const { id } = req.params;
+    const { rows } = await pool.query(
+      `SELECT (SELECT COUNT(*) FROM user_companies WHERE company_id = $1)::int AS users,
+              (SELECT COUNT(*) FROM customers      WHERE company_id = $1)::int AS customers,
+              (SELECT COUNT(*) FROM quotations     WHERE company_id = $1)::int AS quotations,
+              (SELECT COUNT(*) FROM invoices       WHERE company_id = $1)::int AS invoices`,
+      [id]
+    );
+    const u = rows[0];
+    if (u.users || u.customers || u.quotations || u.invoices) {
+      return reply.status(400).send({
+        message: `This company is still in use (${u.users} users, ${u.customers} customers, ${u.quotations} quotations, ${u.invoices} invoices). Remove or reassign them first.`,
+      });
+    }
     const deleted = await deleteCompanySettingsRow(id);
     if (!deleted) {
       return reply.status(400).send({
@@ -208,9 +230,7 @@ export const resetQuotationNumbering = async (req, reply) => {
 
 export const getProfile = async (req, reply) => {
   try {
-    const row = await getAdminProfile();
-    if (!row) return reply.status(404).send({ message: 'Profile not found' });
-    return reply.send(mapProfile(row));
+      return reply.send({ adminName: req.user.name ?? req.user.fullName, adminEmail: req.user.email });
   } catch (err) {
     return reply.status(500).send({ message: 'Server error', error: err.message });
   }
@@ -218,8 +238,14 @@ export const getProfile = async (req, reply) => {
 
 export const updateProfile = async (req, reply) => {
   try {
-    const saved = await saveAdminProfileRow(req.body);
-    return reply.send(mapProfile(saved));
+    const { adminName, adminEmail } = req.body || {};
+    if (!adminName?.trim() || !/^\S+@\S+\.\S+$/.test(adminEmail || '')) {
+      return reply.status(400).send({ message: 'Enter a valid name and email.' });
+    }
+    const clash = await pool.query('SELECT 1 FROM users WHERE LOWER(email) = LOWER($1) AND id <> $2', [adminEmail, req.user.id]);
+    if (clash.rowCount) return reply.status(409).send({ message: 'A user with this email already exists.' });
+    await pool.query('UPDATE users SET name = $1, email = $2 WHERE id = $3', [adminName.trim(), adminEmail.trim(), req.user.id]);
+    return reply.send({ adminName: adminName.trim(), adminEmail: adminEmail.trim() });
   } catch (err) {
     return reply.status(500).send({ message: 'Server error', error: err.message });
   }
@@ -233,14 +259,15 @@ export const changePassword = async (req, reply) => {
       return reply.status(400).send({ message: 'Password must be at least 6 characters.' });
     }
 
-    const existingHash = await getPasswordHash();
+    const { rows } = await pool.query('SELECT password FROM users WHERE id = $1', [req.user.id]);
+    const existingHash = rows[0]?.password;
     if (existingHash) {
       const valid = await bcrypt.compare(currentPassword || '', existingHash);
       if (!valid) return reply.status(401).send({ message: 'Current password is incorrect.' });
     }
 
     const newHash = await bcrypt.hash(newPassword, 10);
-    await updatePasswordHash(newHash);
+    await pool.query('UPDATE users SET password = $1 WHERE id = $2', [newHash, req.user.id]);
     return reply.send({ message: 'Password updated' });
   } catch (err) {
     return reply.status(500).send({ message: 'Server error', error: err.message });

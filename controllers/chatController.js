@@ -147,6 +147,11 @@ const SYSTEM_INSTRUCTION =
   "call ran successfully in this same turn. When the user has answered your questions, call " +
   "the tool immediately instead of describing what you will do. If a tool returns an error, " +
   "tell the user what went wrong. " +
+ "You CANNOT create, edit, delete or list app users (login accounts), roles, passwords or " +
+  "company access. If the user asks for any of that (e.g. 'create a user', 'add a login', " +
+  "'change someone's role'), do NOT call any tool. Reply that users are managed only by an " +
+  "Admin on the Users page. The word 'user' alone never means customer: only create or edit a " +
+  "customer when the user says customer, client or buyer. " +
   "If asked your name, say you're __AI_NAME__.";
 
 const MAX_TOOL_ROUNDS = 6;

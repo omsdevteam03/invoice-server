@@ -11,11 +11,23 @@ import pool from '../config/db.js';
 // (enforced by a partial unique index — see migration_add_company_profiles.sql).
 
 // All saved profiles, oldest first (used for the picker/list in Settings).
-export const listCompanySettings = async () => {
+// companyIds = null means "all companies" (used for Admin)
+export const listCompanySettings = async (companyIds = null) => {
   const result = await pool.query(
-    'SELECT * FROM company_settings ORDER BY created_at ASC, id ASC'
+    'SELECT * FROM company_settings WHERE ($1::int[] IS NULL OR id = ANY($1)) ORDER BY created_at ASC, id ASC',
+    [companyIds]
   );
   return result.rows;
+};
+
+// The company a user works under: their active one if they have it, else their first.
+export const getCompanyForUser = async (companyIds) => {
+  const result = await pool.query(
+    `SELECT * FROM company_settings WHERE id = ANY($1)
+     ORDER BY (status = 'active') DESC, id ASC LIMIT 1`,
+    [companyIds]
+  );
+  return result.rows[0];
 };
 
 // The single currently-active company profile. This is what the rest of

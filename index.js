@@ -13,6 +13,7 @@ import cron from 'node-cron';
 import { getBackupSettings, markBackupRun, createBackupFile } from './models/settingsModel.js';
 import chatRoutes from "./routes/chatRoutes.js";
 import usersRoutes from './routes/usersRoutes.js';
+import { authenticate } from './middleware/auth.js';
 import { purgeOldTrashedCustomers } from './models/customerModel.js';
 import { purgeOldTrashedInvoices } from './models/invoiceModel.js';
 import { purgeOldTrashedQuotations } from './models/quotationModel.js';
@@ -32,14 +33,19 @@ await fastify.register(multipart, {
 });
 
 // Routes
-fastify.register(authRoutes, { prefix: '/api/auth' });
-fastify.register(quotationRoutes, { prefix: '/api/quotations' });
-fastify.register(invoiceRoutes, { prefix: '/api/invoices' });
-fastify.register(customerRoutes, { prefix: '/api/customers' });
-fastify.register(expenseRoutes, { prefix: '/api/expenses' });
-fastify.register(settingsRoutes, { prefix: '/api/settings' });
-fastify.register(chatRoutes, { prefix: '/api/chat' });
-fastify.register(usersRoutes, { prefix: '/api/users' });
+fastify.register(authRoutes, { prefix: '/api/auth' });      // public (login)
+fastify.register(usersRoutes, { prefix: '/api/users' });    // has its own Admin check
+
+// Everything below requires a logged-in user
+fastify.register(async (app) => {
+  app.addHook('preHandler', authenticate);
+  app.register(quotationRoutes, { prefix: '/api/quotations' });
+  app.register(invoiceRoutes, { prefix: '/api/invoices' });
+  app.register(customerRoutes, { prefix: '/api/customers' });
+  app.register(expenseRoutes, { prefix: '/api/expenses' });
+  app.register(settingsRoutes, { prefix: '/api/settings' });
+  app.register(chatRoutes, { prefix: '/api/chat' });
+});
 // Root
 fastify.get('/', async () => ({ message: 'Server is running!' }));
 

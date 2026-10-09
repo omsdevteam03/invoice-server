@@ -37,7 +37,7 @@ const toInvoice = (inv) => ({
 
 export const getInvoice = async (req, reply) => {
   try {
-    const inv = await getInvoiceById(req.params.id);
+    const inv = await getInvoiceById(req.params.id, req.dataScope);
     if (!inv) return reply.status(404).send({ message: 'Not found' });
     return reply.send(toInvoice(inv));
   } catch (err) {
@@ -47,7 +47,7 @@ export const getInvoice = async (req, reply) => {
 
 export const getInvoices = async (req, reply) => {
   try {
-    const rows = await getAllInvoices();
+    const rows = await getAllInvoices(req.dataScope);
     return reply.send(rows.map(toInvoice));
   } catch (err) {
     return reply.status(500).send({ message: 'Server error', error: err.message });
@@ -56,38 +56,40 @@ export const getInvoices = async (req, reply) => {
 
 export const upsertInvoice = async (req, reply) => {
   try {
-    const saved = await saveInvoice(req.body);
+    const saved = await saveInvoice(req.body, req.dataScope, req.ownCompanyId);
+    if (!saved) return reply.status(404).send({ message: 'Invoice not found' });
 
-    // ✅ Customer totalBilled update
+    // Customer totalBilled update (only within this invoice's company)
     const buyerName = req.body.buyerName;
     const result = await pool.query(
-      `SELECT total FROM invoices WHERE buyer_name = $1 AND deleted_at IS NULL`,
-      [buyerName]
+      `SELECT total FROM invoices WHERE buyer_name = $1 AND company_id IS NOT DISTINCT FROM $2 AND deleted_at IS NULL`,
+      [buyerName, saved.company_id]
     );
     const totalBilled = result.rows.reduce((sum, row) => sum + Number(row.total), 0);
     await pool.query(
-      `UPDATE customers SET total_billed = $1 WHERE name = $2`,
-      [totalBilled, buyerName]
+      `UPDATE customers SET total_billed = $1 WHERE name = $2 AND company_id IS NOT DISTINCT FROM $3`,
+      [totalBilled, buyerName, saved.company_id]
     );
 
-    // Return the saved invoice in the same shape the frontend expects
     return reply.send(toInvoice(saved));
   } catch (err) {
+    req.log.error(err);
     return reply.status(500).send({ message: 'Server error', error: err.message });
   }
 };
 
 export const removeInvoice = async (req, reply) => {
   try {
-    await deleteInvoice(req.params.id);
+    await deleteInvoice(req.params.id, req.dataScope);
     return reply.send({ message: 'Deleted' });
   } catch (err) {
     return reply.status(500).send({ message: 'Server error', error: err.message });
   }
 };
+
 export const getTrash = async (req, reply) => {
   try {
-    const rows = await getTrashedInvoices();
+    const rows = await getTrashedInvoices(req.dataScope);
     return reply.send(rows.map(inv => ({
       id: inv.id, invoiceNo: inv.invoice_no, buyerName: inv.buyer_name,
       total: Number(inv.total), deletedAt: inv.deleted_at,
@@ -99,7 +101,7 @@ export const getTrash = async (req, reply) => {
 
 export const restoreFromTrash = async (req, reply) => {
   try {
-    const restored = await restoreInvoice(req.params.id);
+    const restored = await restoreInvoice(req.params.id, req.dataScope);
     if (!restored) return reply.status(404).send({ message: 'Not found in trash' });
     return reply.send({ message: 'Restored', invoice: restored });
   } catch (err) {
@@ -109,10 +111,9 @@ export const restoreFromTrash = async (req, reply) => {
 
 export const deletePermanently = async (req, reply) => {
   try {
-    await permanentlyDeleteInvoice(req.params.id);
+    await permanentlyDeleteInvoice(req.params.id, req.dataScope);
     return reply.send({ message: 'Permanently deleted' });
   } catch (err) {
     return reply.status(500).send({ message: 'Server error', error: err.message });
   }
 };
-

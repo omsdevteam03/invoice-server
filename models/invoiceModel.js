@@ -1,18 +1,25 @@
 import pool from '../config/db.js';
 
-export const getAllInvoices = async () => {
-  const result = await pool.query('SELECT * FROM invoices WHERE deleted_at IS NULL ORDER BY created_at DESC');
+// scope = null  -> Admin: every invoice
+// scope = [ids] -> other users: only their own company's invoices
+// scope left out -> nothing
+export const getAllInvoices = async (scope = []) => {
+  const result = await pool.query(
+    'SELECT * FROM invoices WHERE deleted_at IS NULL AND ($1::int[] IS NULL OR company_id = ANY($1)) ORDER BY created_at DESC',
+    [scope]
+  );
   return result.rows;
 };
-export const saveInvoice = async (inv) => {
+
+export const saveInvoice = async (inv, scope = [], ownCompanyId = null) => {
   const result = await pool.query(`
     INSERT INTO invoices (
       id, invoice_no, buyer_name, buyer_company_name, buyer_address, buyer_mobile, buyer_gstin,
       date, due_date, status, gst_type, gst_percent, items, amount_paid, total, amount_due, notes, signature,
       company_name, company_address, company_gstin, logo, from_quotation_id, invoice_lang,
-      payments, activity_log, converted_from_id, converted_invoice_id
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
-     ON CONFLICT (id) DO UPDATE SET
+      payments, activity_log, converted_from_id, converted_invoice_id, company_id
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
+    ON CONFLICT (id) DO UPDATE SET
       invoice_no=$2, buyer_name=$3, buyer_company_name=$4, buyer_address=$5, buyer_mobile=$6, buyer_gstin=$7,
       date=$8, due_date=$9, status=$10, gst_type=$11, gst_percent=$12, items=$13, amount_paid=$14,
       total=$15, amount_due=$16, notes=$17, signature=$18,
@@ -20,17 +27,18 @@ export const saveInvoice = async (inv) => {
       invoice_lang=$24,
       payments=$25, activity_log=$26, converted_from_id=$27, converted_invoice_id=$28,
       deleted_at=NULL
+    WHERE ($30::int[] IS NULL OR invoices.company_id = ANY($30))
     RETURNING *`,
     [
       inv.id,
       inv.invoiceNo,
       inv.buyerName,
-      inv.buyerCompanyName || null,  // ← NEW: client's company name
+      inv.buyerCompanyName || null,
       inv.buyerAddress || null,
       inv.buyerMobile || null,
       inv.buyerGSTIN || null,
       inv.date || null,
-      inv.dueDate || null,          // "" -> null, avoids invalid date error
+      inv.dueDate || null,
       inv.status,
       inv.gstType,
       inv.gstPercent || 18,
@@ -39,43 +47,60 @@ export const saveInvoice = async (inv) => {
       inv.total,
       inv.amountDue,
       inv.notes || null,
-      inv.signature || null,        // undefined -> null, avoids pg param error
+      inv.signature || null,
       inv.companyName || null,
       inv.companyAddress || null,
       inv.companyGSTIN || null,
       inv.logo || null,
-      inv.fromQuotationId || null,  // ← NEW: links this invoice back to its source quotation
+      inv.fromQuotationId || null,
       inv.invoiceLang === 'ta' ? 'ta' : 'en',
       JSON.stringify(inv.payments || []),
       JSON.stringify(inv.activityLog || []),
       inv.convertedFromId || null,
       inv.convertedInvoiceId || null,
+      ownCompanyId,   // $29 - new invoices are saved under this company
+      scope,          // $30 - which existing invoices this user may overwrite
     ]
   );
   return result.rows[0];
 };
 
-export const getInvoiceById = async (id) => {
-  const result = await pool.query('SELECT * FROM invoices WHERE id = $1 AND deleted_at IS NULL', [id]);
+export const getInvoiceById = async (id, scope = []) => {
+  const result = await pool.query(
+    'SELECT * FROM invoices WHERE id = $2 AND deleted_at IS NULL AND ($1::int[] IS NULL OR company_id = ANY($1))',
+    [scope, id]
+  );
   return result.rows[0];
 };
 
-export const deleteInvoice = async (id) => {
-  await pool.query('UPDATE invoices SET deleted_at = NOW() WHERE id = $1', [id]);
+export const deleteInvoice = async (id, scope = []) => {
+  await pool.query(
+    'UPDATE invoices SET deleted_at = NOW() WHERE id = $2 AND ($1::int[] IS NULL OR company_id = ANY($1))',
+    [scope, id]
+  );
 };
 
-export const getTrashedInvoices = async () => {
-  const result = await pool.query('SELECT * FROM invoices WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC');
+export const getTrashedInvoices = async (scope = []) => {
+  const result = await pool.query(
+    'SELECT * FROM invoices WHERE deleted_at IS NOT NULL AND ($1::int[] IS NULL OR company_id = ANY($1)) ORDER BY deleted_at DESC',
+    [scope]
+  );
   return result.rows;
 };
 
-export const restoreInvoice = async (id) => {
-  const result = await pool.query('UPDATE invoices SET deleted_at = NULL WHERE id = $1 RETURNING *', [id]);
+export const restoreInvoice = async (id, scope = []) => {
+  const result = await pool.query(
+    'UPDATE invoices SET deleted_at = NULL WHERE id = $2 AND ($1::int[] IS NULL OR company_id = ANY($1)) RETURNING *',
+    [scope, id]
+  );
   return result.rows[0];
 };
 
-export const permanentlyDeleteInvoice = async (id) => {
-  await pool.query('DELETE FROM invoices WHERE id = $1', [id]);
+export const permanentlyDeleteInvoice = async (id, scope = []) => {
+  await pool.query(
+    'DELETE FROM invoices WHERE id = $2 AND ($1::int[] IS NULL OR company_id = ANY($1))',
+    [scope, id]
+  );
 };
 
 export const purgeOldTrashedInvoices = async () => {

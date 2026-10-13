@@ -9,11 +9,13 @@ import {
   deleteChat,
   sendMessage,
   editMessage,
+  getUsage,
 } from "../controllers/chatController.js";
 
 export default async function chatRoutes(fastify) {
   fastify.post("/", createChat);               // POST   /api/chat            -> create new chat
   fastify.get("/", listChats);                  // GET    /api/chat            -> list all chats
+  fastify.get("/usage", getUsage);               // GET    /api/chat/usage      -> daily message usage
   fastify.get("/:chatId", getChat);              // GET    /api/chat/:chatId    -> get one chat + messages
   fastify.put("/:chatId", renameChat);           // PUT    /api/chat/:chatId    -> rename chat
   fastify.delete("/:chatId", deleteChat);        // DELETE /api/chat/:chatId    -> delete chat

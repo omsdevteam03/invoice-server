@@ -147,7 +147,7 @@ const SYSTEM_INSTRUCTION =
   "call ran successfully in this same turn. When the user has answered your questions, call " +
   "the tool immediately instead of describing what you will do. If a tool returns an error, " +
   "tell the user what went wrong. " +
- "You CANNOT create, edit, delete or list app users (login accounts), roles, passwords or " +
+  "You CANNOT create, edit, delete or list app users (login accounts), roles, passwords or " +
   "company access. If the user asks for any of that (e.g. 'create a user', 'add a login', " +
   "'change someone's role'), do NOT call any tool. Reply that users are managed only by an " +
   "Admin on the Users page. The word 'user' alone never means customer: only create or edit a " +
@@ -303,7 +303,7 @@ const TOOLS = [
               items: { type: "STRING" },
               description: "Timeline/process notes, one per array entry, describing how this specific project will be delivered.",
             },
-                        includeGst: { type: "BOOLEAN", description: "Default false. Set to true ONLY if the user explicitly asks for GST/tax to be added." },
+            includeGst: { type: "BOOLEAN", description: "Default false. Set to true ONLY if the user explicitly asks for GST/tax to be added." },
             customSections: {
               type: "ARRAY",
               description:
@@ -361,7 +361,8 @@ const TOOLS = [
       },
       {
         name: "update_quotation",
-        description: "Edit fields on an existing quotation — status, client details, items, GST/tax settings, or any of its content sections (terms, scope of work, deliverables, technology, timeline description, payment terms, project title/description, and custom sections). Only send the fields that are changing. If items are provided (or includeGst/gstPercent changes), the total is recalculated.", parameters: {
+        description: "Edit fields on an existing quotation — status, client details, items, GST/tax settings, or any of its content sections (terms, scope of work, deliverables, technology, timeline description, payment terms, project title/description, and custom sections). Only send the fields that are changing. If items are provided (or includeGst/gstPercent changes), the total is recalculated.",
+        parameters: {
           type: "OBJECT",
           properties: {
             quotationId: { type: "STRING", description: "ID of the quotation to edit, from search_quotations" },
@@ -435,7 +436,8 @@ const TOOLS = [
       },
       {
         name: "approve_quotation",
-        description: "Approve a quotation. If it is still a draft, this first sends it (assigns the official QT number), then sets its status to Approved. Use this whenever the user says approve or accept. ALWAYS use this instead of update_quotation for approving. Call search_quotations first to get the ID.",        parameters: {
+        description: "Approve a quotation. If it is still a draft, this first sends it (assigns the official QT number), then sets its status to Approved. Use this whenever the user says approve or accept. ALWAYS use this instead of update_quotation for approving. Call search_quotations first to get the ID.",
+        parameters: {
           type: "OBJECT",
           properties: {
             quotationId: { type: "STRING", description: "ID of the quotation, from search_quotations" },
@@ -549,10 +551,10 @@ const TOOLS = [
   },
 ];
 
-// ADD THIS BLOCK — maps a tool name to a function that pulls a
-// {type, id, label} reference out of that tool's result, so the chat
-// bubble can show a "View X" button. Only tools that create/update a
-// record the user would want to open are listed here.
+// Maps a tool name to a function that pulls a {type, id, label} reference
+// out of that tool's result, so the chat bubble can show a "View X" button.
+// Only tools that create/update a record the user would want to open are
+// listed here.
 // Drafts have no number, so fall back to the project title
 const quotationLabel = (r) =>
   r.quotation_number || r.quotationNumber || r.project_title || r.projectTitle || "Draft";
@@ -643,27 +645,39 @@ function buildFallbackDescription(customer, companyRow, items = []) {
     ? `This proposal outlines the scope of work agreed upon between ${issuer} and ${client}, covering ${workSummary}.`
     : `This proposal outlines the scope of work agreed upon between ${issuer} and ${client}.`;
 }
+
 // Mirrors the numbering logic in InvoicesPage.jsx (openDraftFromCustomer /
 // openDraftFromQuotation): max existing number for that series + 1, padded
 // to 3 digits. Final and Proforma are separate series, distinguished only
 // by invoiceNo prefix (invoice_type isn't persisted in the invoices table).
+// Numbering must look at EVERY company (scope null) plus trashed rows, so a
+// number is never reused no matter which user the AI is acting for.
 async function reserveNextInvoiceNumber(type) {
   const settings = await settingsModel.getInvoiceSettings();
   const prefix = type === "Proforma"
     ? (settings?.proforma_prefix || "PI-")
     : (settings?.invoice_prefix || "INV-");
 
-  const all = await invoiceModel.getAllInvoices();
+  const all = [
+    ...(await invoiceModel.getAllInvoices(null)),
+    ...(await invoiceModel.getTrashedInvoices(null)),
+  ];
   const sameSeries = all.filter((i) => (i.invoice_no || "").startsWith(prefix));
   const numbers = sameSeries.map((i) => parseInt((i.invoice_no || "").match(/(\d+)$/)?.[1] || "0", 10));
   const nextNum = (numbers.length ? Math.max(...numbers) : 0) + 1;
   return `${prefix}${String(nextNum).padStart(3, "0")}`;
 }
+
 // Mirrors generateId() in CustomerForm.jsx: max existing CUST-xxx number + 1.
 // Ignores any customer whose id isn't in the CUST-xxx format (e.g. legacy
 // UUID-based records) so they can't poison the max() calculation with NaN.
+// Looks at every company (scope null) plus trashed rows, so an id that
+// already exists is never handed out again.
 async function reserveNextCustomerId() {
-  const all = await customerModel.getAllCustomers();
+  const all = [
+    ...(await customerModel.getAllCustomers(null)),
+    ...(await customerModel.getTrashedCustomers(null)),
+  ];
   const numbers = all
     .filter((c) => (c.id || "").startsWith("CUST-"))
     .map((c) => parseInt(c.id.slice(5), 10))
@@ -691,26 +705,29 @@ function toInvoiceItems(items = []) {
 // ── Small lookup helpers ─────────────────────────────────
 // None of the provided models expose getById, so we filter the full list.
 // Fine for now; swap for a real WHERE id = $1 query if these tables grow large.
-async function findCustomerById(id) {
-  const all = await customerModel.getAllCustomers();
+// `ctx.scope` is request.dataScope: null = Admin (everything), [ids] = only
+// those companies. It MUST be passed, or the models return nothing.
+async function findCustomerById(id, ctx) {
+  const all = await customerModel.getAllCustomers(ctx.scope);
   return all.find((c) => c.id === id) || null;
 }
 
-async function findQuotationById(id) {
-  const all = await quotationModel.getAllQuotations();
+async function findQuotationById(id, ctx) {
+  const all = await quotationModel.getAllQuotations(ctx.scope);
   return all.find((q) => q.id === id) || null;
 }
 
-async function findInvoiceById(id) {
-  const all = await invoiceModel.getAllInvoices();
+async function findInvoiceById(id, ctx) {
+  const all = await invoiceModel.getAllInvoices(ctx.scope);
   return all.find((i) => i.id === id) || null;
 }
 
 // ── Dispatcher: runs the real DB call for whichever function Gemini picked ──
-async function executeTool(name, args) {
+// ctx = { scope, ownCompanyId } taken from the logged-in user's request.
+async function executeTool(name, args, ctx) {
   switch (name) {
     case "search_customers": {
-      const all = await customerModel.getAllCustomers();
+      const all = await customerModel.getAllCustomers(ctx.scope);
       const q = (args.query || "").toLowerCase();
       const matches = all
         .filter(
@@ -723,47 +740,72 @@ async function executeTool(name, args) {
     }
 
     case "create_customer": {
-      const customer = await customerModel.saveCustomer({
-        id: await reserveNextCustomerId(),
-        name: args.name,
-        company: args.company || null,
-        email: args.email || null,
-        phone: args.phone || null,
-        address: args.address || null,
-        city: args.city || null,
-        gstNumber: args.gstNumber || null,
-        status: "Active",
-      });
+      const customer = await customerModel.saveCustomer(
+        {
+          id: await reserveNextCustomerId(),
+          name: args.name,
+          company: args.company || null,
+          email: args.email || null,
+          phone: args.phone || null,
+          address: args.address || null,
+          city: args.city || null,
+          gstNumber: args.gstNumber || null,
+          status: "Active",
+        },
+        ctx.scope,
+        ctx.ownCompanyId
+      );
+      if (!customer) return { error: "The customer could not be saved. Please try again." };
       return customer;
     }
 
     case "update_customer": {
-      const existing = await findCustomerById(args.customerId);
+      const existing = await findCustomerById(args.customerId, ctx);
       if (!existing) return { error: "Customer not found. Run search_customers again to confirm the ID." };
 
+      // Build the object with the camelCase keys saveCustomer expects.
+      // (Spreading `...existing` would pass snake_case keys, and saveCustomer
+      // would reset emails, phones, notes, tags, total billed etc. to empty.)
       const merged = {
-        ...existing,
+        id: existing.id,
         name: args.name ?? existing.name,
         company: args.company ?? existing.company,
         email: args.email ?? existing.email,
+        emails: existing.emails,
         phone: args.phone ?? existing.phone,
-        city: args.city ?? existing.city,
-        gstNumber: args.gstNumber ?? existing.gst_number,
+        phones: existing.phones,
+        supportNumber: existing.support_number,
+        whatsapp: existing.whatsapp,
+        whatsapps: existing.whatsapps,
         status: args.status ?? existing.status,
+        type: existing.type,
+        category: existing.category,
+        totalBilled: existing.total_billed,
+        address: existing.address,
+        addresses: existing.addresses,
+        since: existing.since,
+        notes: existing.notes,
+        tags: existing.tags,
+        city: args.city ?? existing.city,
+        state: existing.state,
+        country: existing.country,
+        gstNumber: args.gstNumber ?? existing.gst_number,
+        customerType: existing.customer_type,
       };
-      const customer = await customerModel.saveCustomer(merged);
+      const customer = await customerModel.saveCustomer(merged, ctx.scope, ctx.ownCompanyId);
+      if (!customer) return { error: "Customer not found or you don't have access to it." };
       return customer;
     }
 
     case "delete_customer": {
-      const existing = await findCustomerById(args.customerId);
+      const existing = await findCustomerById(args.customerId, ctx);
       if (!existing) return { error: "Customer not found. Run search_customers again to confirm the ID." };
-      await customerModel.deleteCustomer(args.customerId);
+      await customerModel.deleteCustomer(args.customerId, ctx.scope);
       return { deleted: true, customerId: args.customerId, name: existing.name };
     }
 
     case "create_quotation": {
-      const customer = await findCustomerById(args.customerId);
+      const customer = await findCustomerById(args.customerId, ctx);
       if (!customer) {
         return { error: "Customer not found. Run search_customers again to confirm the ID." };
       }
@@ -799,17 +841,17 @@ async function executeTool(name, args) {
         amount: i.total,
       }));
 
-      const newId = generateInternalId();            // NEW: keep the id in a variable
+      const newId = generateInternalId();
 
       const quotation = await quotationModel.saveQuotation(
         {
-          id: newId,                                 // CHANGED: use the variable
-          isTemplate: false,                 // NEW
-          customerId: customer.id,           // NEW
-          name: customer.name || "",         // CHANGED: "" instead of null
-          company: customer.company || "",   // CHANGED: "" instead of null (list calls .toLowerCase())
-          email: customer.email || "",       // CHANGED
-          phone: customer.phone || "",       // CHANGED
+          id: newId,
+          isTemplate: false,
+          customerId: customer.id,
+          name: customer.name || "",
+          company: customer.company || "",   // "" instead of null (list calls .toLowerCase())
+          email: customer.email || "",
+          phone: customer.phone || "",
           date: new Date().toISOString().slice(0, 10),
           validUntil: addDays(30),
           status: "Draft",
@@ -839,16 +881,18 @@ async function executeTool(name, args) {
           clientAddress: [customer.address, customer.city].filter(Boolean).join(", "),
           logo: companyRow?.logo || null,
           templateStyle: template.templateStyle,
-          costItems,                         // CHANGED: uses the array with ids
+          costItems,
           includeGst,
           gstMode: includeGst ? "with" : "without",
           gstPercent,
         },
         true,
-        true   // byAi -> logged as "by Nexa AI"
+        true,             // byAi -> logged as "by Nexa AI"
+        ctx.scope,
+        ctx.ownCompanyId  // new quotations belong to this user's company
       );
       // Re-read from the DB so a failed save is reported instead of hidden
-      const saved = await findQuotationById(newId);
+      const saved = await findQuotationById(newId, ctx);
       if (!saved) {
         return { error: "The quotation could not be saved to the database. Please try again." };
       }
@@ -856,14 +900,14 @@ async function executeTool(name, args) {
     }
 
     case "search_quotations": {
-      const all = await quotationModel.getAllQuotations();
+      const all = await quotationModel.getAllQuotations(ctx.scope);
       const q = (args.query || "").toLowerCase();
       const matches = all
         .filter(
           (row) =>
             row.id?.toLowerCase().includes(q) ||
-            row.quotation_number?.toLowerCase().includes(q) ||   // NEW: search "QT-0004"
-            row.project_title?.toLowerCase().includes(q) ||      // NEW
+            row.quotation_number?.toLowerCase().includes(q) ||   // search "QT-0004"
+            row.project_title?.toLowerCase().includes(q) ||
             row.name?.toLowerCase().includes(q) ||
             row.company?.toLowerCase().includes(q)
         )
@@ -872,7 +916,7 @@ async function executeTool(name, args) {
     }
 
     case "update_quotation": {
-      const existing = await findQuotationById(args.quotationId);
+      const existing = await findQuotationById(args.quotationId, ctx);
       if (!existing) return { error: "Quotation not found. Run search_quotations again to confirm the ID." };
 
       if (args.status && /^(approved|accepted|sent)$/i.test(args.status) && !existing.quotation_number) {
@@ -911,10 +955,10 @@ async function executeTool(name, args) {
 
       const merged = {
         id: existing.id,
-        quotationNumber: existing.quotation_number,   // NEW: keep the official number
-        sentAt: existing.sent_at,                     // NEW
-        versionHistory: existing.version_history,     // NEW
-        isTemplate: false,                            // NEW
+        quotationNumber: existing.quotation_number,   // keep the official number
+        sentAt: existing.sent_at,
+        versionHistory: existing.version_history,
+        isTemplate: false,
         name: args.name ?? existing.name,
         company: args.company ?? existing.company,
         email: args.email ?? existing.email,
@@ -950,39 +994,41 @@ async function executeTool(name, args) {
         clientAddress: args.clientAddress ?? existing.client_address,
         logo: existing.logo,
         templateStyle: existing.template_style,
-        costItems: items.map((i, idx) => ({           // CHANGED: add ids
+        costItems: items.map((i, idx) => ({
           id: `item-${Date.now()}-${idx}`,
           name: i.description,
           amount: i.total,
         })),
         includeGst,
-        gstMode,                                      // NEW
+        gstMode,
         gstPercent,
       };
       // isNew=false -> keeps the same QT-xxxx id/number, does not reserve a new one
-      const quotation = await quotationModel.saveQuotation(merged, false, true);
+      const quotation = await quotationModel.saveQuotation(merged, false, true, ctx.scope, ctx.ownCompanyId);
+      if (!quotation) return { error: "Quotation not found or you don't have access to it." };
       return { ...quotation, id: quotation?.id ?? existing.id };
     }
 
     case "approve_quotation": {
-      const existing = await findQuotationById(args.quotationId);
+      const existing = await findQuotationById(args.quotationId, ctx);
       if (!existing) return { error: "Quotation not found. Run search_quotations again to confirm the ID." };
 
       // 1. Draft -> assign the QT number (same as the Send button).
       //    Skip if it already has a number, so it is never numbered twice.
       if (!existing.quotation_number) {
-        await quotationModel.sendQuotation(args.quotationId);   // <-- your real send function
+        await quotationModel.sendQuotation(args.quotationId, ctx.scope);
       }
 
       // 2. Set the status to Approved (keeps the QT number)
-      const updated = await executeTool("update_quotation", {
-        quotationId: args.quotationId,
-        status: "Approved",
-      });
+      const updated = await executeTool(
+        "update_quotation",
+        { quotationId: args.quotationId, status: "Approved" },
+        ctx
+      );
       if (updated?.error) return updated;
 
       // 3. Re-read and verify both things really happened
-      const saved = await findQuotationById(args.quotationId);
+      const saved = await findQuotationById(args.quotationId, ctx);
       if (!saved?.quotation_number || saved.status !== "Approved") {
         return { error: `Approval failed (number: ${saved?.quotation_number || "none"}, status: ${saved?.status}).` };
       }
@@ -990,14 +1036,14 @@ async function executeTool(name, args) {
     }
 
     case "delete_quotation": {
-      const existing = await findQuotationById(args.quotationId);
+      const existing = await findQuotationById(args.quotationId, ctx);
       if (!existing) return { error: "Quotation not found. Run search_quotations again to confirm the ID." };
-      await quotationModel.deleteQuotation(args.quotationId);
+      await quotationModel.deleteQuotation(args.quotationId, ctx.scope);
       return { deleted: true, quotationId: args.quotationId };
     }
 
     case "get_quotation_stats": {
-      const all = await quotationModel.getAllQuotations();
+      const all = await quotationModel.getAllQuotations(ctx.scope);
       const counts = {};
       for (const q of all) {
         const status = q.status || "Unknown";
@@ -1005,9 +1051,10 @@ async function executeTool(name, args) {
       }
       return { total: all.length, byStatus: counts };
     }
+
     case "create_invoice": {
       if (args.fromQuotationId) {
-        const srcQuotation = await findQuotationById(args.fromQuotationId);
+        const srcQuotation = await findQuotationById(args.fromQuotationId, ctx);
         if (!srcQuotation) return { error: "Source quotation not found." };
         if (!srcQuotation.quotation_number) {
           return { error: "That quotation is still a draft with no QT number. Call approve_quotation first, then create the invoice." };
@@ -1022,46 +1069,49 @@ async function executeTool(name, args) {
         settingsModel.getInvoiceSettings(),
         settingsModel.getCompanySettings(),
       ]);
-            // GST is OFF unless the user explicitly asked for it
+      // GST is OFF unless the user explicitly asked for it
       const includeGst = args.includeGst === true;
       const gstPercent = invoiceSettings?.gst_percent ?? 18;
       const tax = includeGst ? Math.round(subtotal * (gstPercent / 100)) : 0;
       const total = subtotal + tax;
 
-      const invoice = await invoiceModel.saveInvoice({
-        id: crypto.randomUUID(),
-        invoiceNo,
-        buyerName: args.buyerName,
-        // Only keep a company name if the user really gave one
-        // (ignore it when the AI just copied the person's name into it)
-        buyerCompanyName:
-          args.buyerCompanyName &&
-          args.buyerCompanyName.trim().toLowerCase() !== (args.buyerName || "").trim().toLowerCase()
-            ? args.buyerCompanyName.trim()
-            : null,
-        buyerAddress: args.buyerAddress || null,
-        buyerMobile: args.buyerMobile || null,
-        buyerGSTIN: args.buyerGSTIN || null,
-        date: new Date().toISOString().slice(0, 10),
-        dueDate: args.dueDate || null,
-        status: "Unpaid",
-        gstType: includeGst ? "With GST" : "No GST",
-        gstPercent,
-        items: normalizedItems,
-        amountPaid: 0,
-        total,
-        amountDue: total,
-        notes: invoiceSettings?.default_notes || null,
-        companyName: companyRow?.company_name || null,
-        companyAddress: companyRow?.company_address || null,
-        companyGSTIN: companyRow?.gstin || null,
-        logo: companyRow?.logo || null,
-        // Uses the actual signature file that exists in /public — was
-        // previously "/default-signature.png", a file that doesn't exist,
-        // which is why AI-created invoices were showing no signature.
-        signature: "/signature.png",
-        fromQuotationId: args.fromQuotationId || null,
-      });
+      const invoice = await invoiceModel.saveInvoice(
+        {
+          id: crypto.randomUUID(),
+          invoiceNo,
+          buyerName: args.buyerName,
+          // Only keep a company name if the user really gave one
+          // (ignore it when the AI just copied the person's name into it)
+          buyerCompanyName:
+            args.buyerCompanyName &&
+              args.buyerCompanyName.trim().toLowerCase() !== (args.buyerName || "").trim().toLowerCase()
+              ? args.buyerCompanyName.trim()
+              : null,
+          buyerAddress: args.buyerAddress || null,
+          buyerMobile: args.buyerMobile || null,
+          buyerGSTIN: args.buyerGSTIN || null,
+          date: new Date().toISOString().slice(0, 10),
+          dueDate: args.dueDate || null,
+          status: "Unpaid",
+          gstType: includeGst ? "With GST" : "No GST",
+          gstPercent,
+          items: normalizedItems,
+          amountPaid: 0,
+          total,
+          amountDue: total,
+          notes: invoiceSettings?.default_notes || null,
+          companyName: companyRow?.company_name || null,
+          companyAddress: companyRow?.company_address || null,
+          companyGSTIN: companyRow?.gstin || null,
+          logo: companyRow?.logo || null,
+          // Uses the actual signature file that exists in /public
+          signature: "/signature.png",
+          fromQuotationId: args.fromQuotationId || null,
+        },
+        ctx.scope,
+        ctx.ownCompanyId
+      );
+      if (!invoice) return { error: "The invoice could not be saved. Please try again." };
       if (args.fromQuotationId) {
         await quotationModel.addQuotationActivity(
           args.fromQuotationId,
@@ -1072,7 +1122,7 @@ async function executeTool(name, args) {
     }
 
     case "search_invoices": {
-      const all = await invoiceModel.getAllInvoices();
+      const all = await invoiceModel.getAllInvoices(ctx.scope);
       const q = (args.query || "").toLowerCase();
       const matches = all
         .filter(
@@ -1086,7 +1136,7 @@ async function executeTool(name, args) {
     }
 
     case "update_invoice": {
-      const existing = await findInvoiceById(args.invoiceId);
+      const existing = await findInvoiceById(args.invoiceId, ctx);
       if (!existing) return { error: "Invoice not found. Run search_invoices again to confirm the ID." };
 
       const normalizedItems = args.items ? toInvoiceItems(args.items) : existing.items;
@@ -1119,15 +1169,22 @@ async function executeTool(name, args) {
         companyGSTIN: existing.company_gstin,
         logo: existing.logo,
         fromQuotationId: existing.from_quotation_id,
+        // keep these, otherwise saveInvoice wipes payments / log / language
+        invoiceLang: existing.invoice_lang,
+        payments: existing.payments,
+        activityLog: existing.activity_log,
+        convertedFromId: existing.converted_from_id,
+        convertedInvoiceId: existing.converted_invoice_id,
       };
-      const invoice = await invoiceModel.saveInvoice(merged);
+      const invoice = await invoiceModel.saveInvoice(merged, ctx.scope, ctx.ownCompanyId);
+      if (!invoice) return { error: "Invoice not found or you don't have access to it." };
       return invoice;
     }
 
     case "delete_invoice": {
-      const existing = await findInvoiceById(args.invoiceId);
+      const existing = await findInvoiceById(args.invoiceId, ctx);
       if (!existing) return { error: "Invoice not found. Run search_invoices again to confirm the ID." };
-      await invoiceModel.deleteInvoice(args.invoiceId);
+      await invoiceModel.deleteInvoice(args.invoiceId, ctx.scope);
       return { deleted: true, invoiceId: args.invoiceId, invoiceNo: existing.invoice_no };
     }
 
@@ -1158,12 +1215,18 @@ function getUserId(request) {
   return request.user?.id ?? null;
 }
 
+// Who the AI is acting for. dataScope: null = Admin (sees everything),
+// [ids] = only those companies. ownCompanyId = company new records go to.
+function getCtx(request) {
+  return { scope: request.dataScope, ownCompanyId: request.ownCompanyId };
+}
+
 // Builds the Gemini `contents` array from a chat's saved messages and runs
 // the tool-calling loop until a plain text reply comes back, then saves and
 // returns that assistant message. Shared by sendMessage (new message) and
 // editMessage (regenerating after an edit), so the two flows can never
 // drift apart.
-async function generateAssistantReply(chatId, aiName) {
+async function generateAssistantReply(chatId, aiName, ctx) {
   const systemInstruction = SYSTEM_INSTRUCTION.replaceAll("__AI_NAME__", cleanAiName(aiName));
   const history = await chatModel.getMessages(chatId);
   const lastIndex = history.length - 1;
@@ -1200,7 +1263,7 @@ async function generateAssistantReply(chatId, aiName) {
   let replyText = "";
   let mutationOk = false;
   let mutationError = null;
-  const refs = []; // ADD THIS — collects {type, id, label} for anything created/updated this turn
+  const refs = []; // collects {type, id, label} for anything created/updated this turn
   let toolCalls = 0;
   let nudges = 0;
   let deleteOk = false;
@@ -1261,14 +1324,14 @@ async function generateAssistantReply(chatId, aiName) {
     toolCalls++;
     let toolResult;
     try {
-      toolResult = await executeTool(name, args);
+      toolResult = await executeTool(name, args, ctx);
     } catch (err) {
-      console.error("Tool failed:", name, err);   // NEW
+      console.error("Tool failed:", name, err);
       toolResult = { error: err.message };
 
       // The quotation may have been saved before the error happened.
       if (name === "create_quotation") {
-        const all = await quotationModel.getAllQuotations();
+        const all = await quotationModel.getAllQuotations(ctx.scope);
         const found = all.find((q) => q.project_title === args.projectTitle);
         if (found) toolResult = { ...found, id: found.id };
       }
@@ -1283,7 +1346,7 @@ async function generateAssistantReply(chatId, aiName) {
       else mutationOk = true;
     }
 
-    // ADD THIS BLOCK — if this tool produced something viewable, remember it
+    // If this tool produced something viewable, remember it
     const refBuilder = VIEWABLE_TOOLS[name];
     if (refBuilder) {
       const ref = refBuilder(toolResult);
@@ -1307,9 +1370,9 @@ async function generateAssistantReply(chatId, aiName) {
 
   console.log("[Nexa] refs collected this turn:", JSON.stringify(refs));
 
-  // ADD THIS BLOCK — append a hidden marker (never shown to the user as
-  // text) so the frontend can render "View Quotation" style buttons.
-  // Dedupe by type+id in case the same record was touched twice this turn.
+  // Append a hidden marker (never shown to the user as text) so the frontend
+  // can render "View Quotation" style buttons. Dedupe by type+id in case the
+  // same record was touched twice this turn.
   if (refs.length) {
     const uniqueRefs = Array.from(
       new Map(refs.map((r) => [`${r.type}:${r.id}`, r])).values()
@@ -1330,6 +1393,13 @@ export async function listChats(request, reply) {
   const userId = getUserId(request);
   const chats = await chatModel.listChats(userId);
   return reply.send(chats);
+}
+
+// GET /api/chat/usage — no daily limit yet. limit: null makes the frontend
+// hide the "messages left today" bar. (Needs its own route registered BEFORE
+// "/:chatId" in chatRoutes.js, otherwise "usage" is treated as a chat id.)
+export async function getUsage(request, reply) {
+  return reply.send({ limit: null, used: 0 });
 }
 
 export async function getChat(request, reply) {
@@ -1381,7 +1451,7 @@ export async function sendMessage(request, reply) {
     const savedContent = image ? `![image](${image})\n${text}` : text;
     const userMessage = await chatModel.addMessage(chatId, "user", savedContent);
 
-    const assistantMessage = await generateAssistantReply(chatId, aiName);
+    const assistantMessage = await generateAssistantReply(chatId, aiName, getCtx(request));
 
     let updatedChat = chat;
     if (priorCount === 0) {
@@ -1427,7 +1497,7 @@ export async function editMessage(request, reply) {
     // Rewind the conversation: drop the old AI reply and anything after it.
     await chatModel.deleteMessagesAfter(chatId, messageId);
 
-    const assistantMessage = await generateAssistantReply(chatId, aiName);
+    const assistantMessage = await generateAssistantReply(chatId, aiName, getCtx(request));
 
     return reply.send({ chat, userMessage, assistantMessage });
   } catch (err) {

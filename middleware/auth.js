@@ -30,6 +30,7 @@ export const authenticate = async (request, reply) => {
     request.dataScope = user.role === 'Admin' ? null : user.companyIds;
     request.ownCompanyId = user.companyIds[0];
   } catch (err) {
+    console.error('AUTH ERROR:', err.name, '-', err.message);
     return reply.status(401).send({ message: 'Please sign in to continue.' });
   }
 };

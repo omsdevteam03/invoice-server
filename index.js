@@ -7,6 +7,7 @@ import authRoutes from './routes/authRoutes.js';
 import quotationRoutes from './routes/quotationRoutes.js';
 import invoiceRoutes from './routes/invoiceRoutes.js';
 import customerRoutes from './routes/customerRoutes.js';
+import productRoutes from './routes/productRoutes.js';
 import expenseRoutes from './routes/expenseRoutes.js';
 import settingsRoutes from './routes/settingsRoutes.js';
 import cron from 'node-cron';
@@ -42,6 +43,7 @@ fastify.register(async (app) => {
   app.register(quotationRoutes, { prefix: '/api/quotations' });
   app.register(invoiceRoutes, { prefix: '/api/invoices' });
   app.register(customerRoutes, { prefix: '/api/customers' });
+  app.register(productRoutes, { prefix: '/api/products' });
   app.register(expenseRoutes, { prefix: '/api/expenses' });
   app.register(settingsRoutes, { prefix: '/api/settings' });
   app.register(chatRoutes, { prefix: '/api/chat' });

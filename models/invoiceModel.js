@@ -11,14 +11,15 @@ export const getAllInvoices = async (scope = []) => {
   return result.rows;
 };
 
-export const saveInvoice = async (inv, scope = [], ownCompanyId = null) => {
+export const saveInvoice = async (inv, scope = [], ownCompanyId = null, creator = {}) => {
   const result = await pool.query(`
     INSERT INTO invoices (
       id, invoice_no, buyer_name, buyer_company_name, buyer_address, buyer_mobile, buyer_gstin,
       date, due_date, status, gst_type, gst_percent, items, amount_paid, total, amount_due, notes, signature,
       company_name, company_address, company_gstin, logo, from_quotation_id, invoice_lang,
-      payments, activity_log, converted_from_id, converted_invoice_id, company_id
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
+      payments, activity_log, converted_from_id, converted_invoice_id, company_id,
+      created_by, created_by_name, created_via
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$31,$32,$33)
     ON CONFLICT (id) DO UPDATE SET
       invoice_no=$2, buyer_name=$3, buyer_company_name=$4, buyer_address=$5, buyer_mobile=$6, buyer_gstin=$7,
       date=$8, due_date=$9, status=$10, gst_type=$11, gst_percent=$12, items=$13, amount_paid=$14,
@@ -60,6 +61,9 @@ export const saveInvoice = async (inv, scope = [], ownCompanyId = null) => {
       inv.convertedInvoiceId || null,
       ownCompanyId,   // $29 - new invoices are saved under this company
       scope,          // $30 - which existing invoices this user may overwrite
+      creator.id != null ? String(creator.id) : null,  // $31 - created_by (INSERT only)
+      creator.name || null,                            // $32 - created_by_name
+      creator.via || null,                             // $33 - created_via
     ]
   );
   return result.rows[0];

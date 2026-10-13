@@ -31,11 +31,34 @@ export const createUsersController = ({ model, bcrypt }) => {
       return reply.send({ companies: await model.listCompanies() });
     },
 
+    async limit(request, reply) {
+      return reply.send({ limit: await model.getUserLimit(), count: await model.countUsers() });
+    },
+
+    async setLimit(request, reply) {
+      const raw = request.body?.limit;
+      const limit = raw === null || raw === '' || raw === undefined ? null : Number(raw);
+      if (limit !== null && (!Number.isInteger(limit) || limit < 1)) {
+        return fail(reply, 400, 'Enter a whole number of 1 or more.');
+      }
+      const count = await model.countUsers();
+      if (limit !== null && limit < count) {
+        return fail(reply, 400, `You already have ${count} users. Set the limit to ${count} or more.`);
+      }
+      await model.setUserLimit(limit);
+      return reply.send({ limit, count });
+    },
+
     async create(request, reply) {
       const b = request.body || {};
       const msg = validate(b, { creating: true });
       if (msg) return fail(reply, 400, msg);
       if (await model.findByEmail(b.email)) return fail(reply, 409, 'A user with this email already exists.');
+
+      const userLimit = await model.getUserLimit();
+      if (userLimit !== null && (await model.countUsers()) >= userLimit) {
+        return fail(reply, 403, `User limit reached (${userLimit}). Increase the limit to add more users.`);
+      }
 
       const id = await model.create({
         fullName: b.fullName.trim(),

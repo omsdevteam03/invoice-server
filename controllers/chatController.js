@@ -753,7 +753,8 @@ async function executeTool(name, args, ctx) {
           status: "Active",
         },
         ctx.scope,
-        ctx.ownCompanyId
+        ctx.ownCompanyId,
+        ctx.creator
       );
       if (!customer) return { error: "The customer could not be saved. Please try again." };
       return customer;
@@ -791,6 +792,7 @@ async function executeTool(name, args, ctx) {
         country: existing.country,
         gstNumber: args.gstNumber ?? existing.gst_number,
         customerType: existing.customer_type,
+        products: existing.products,
       };
       const customer = await customerModel.saveCustomer(merged, ctx.scope, ctx.ownCompanyId);
       if (!customer) return { error: "Customer not found or you don't have access to it." };
@@ -887,9 +889,10 @@ async function executeTool(name, args, ctx) {
           gstPercent,
         },
         true,
-        true,             // byAi -> logged as "by Nexa AI"
+        true,             // byAi -> logged as "by Nexa AI" and saved as created_via = 'ai'
         ctx.scope,
-        ctx.ownCompanyId  // new quotations belong to this user's company
+        ctx.ownCompanyId, // new quotations belong to this user's company
+        ctx.creator       // the user who asked the AI
       );
       // Re-read from the DB so a failed save is reported instead of hidden
       const saved = await findQuotationById(newId, ctx);
@@ -1109,7 +1112,8 @@ async function executeTool(name, args, ctx) {
           fromQuotationId: args.fromQuotationId || null,
         },
         ctx.scope,
-        ctx.ownCompanyId
+        ctx.ownCompanyId,
+        { ...ctx.creator, via: "ai" }
       );
       if (!invoice) return { error: "The invoice could not be saved. Please try again." };
       if (args.fromQuotationId) {
@@ -1218,7 +1222,12 @@ function getUserId(request) {
 // Who the AI is acting for. dataScope: null = Admin (sees everything),
 // [ids] = only those companies. ownCompanyId = company new records go to.
 function getCtx(request) {
-  return { scope: request.dataScope, ownCompanyId: request.ownCompanyId };
+  return {
+    scope: request.dataScope,
+    ownCompanyId: request.ownCompanyId,
+    // the real person chatting with the AI (from the login token)
+    creator: { id: request.user?.id, name: request.user?.name },
+  };
 }
 
 // Builds the Gemini `contents` array from a chat's saved messages and runs

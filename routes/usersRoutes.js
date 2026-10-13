@@ -13,7 +13,7 @@ const controller = createUsersController({ model, bcrypt });
 const authenticate = async (request, reply) => {
   try {
     const token = (request.headers.authorization || '').replace(/^Bearer\s+/i, '');
-    const payload = jwt.verify(token, process.env.JWT_SECRET || 'secret123');
+    const payload = jwt.verify(token, process.env.JWT_SECRET);
     const user = await model.findById(payload.id ?? payload.userId);
     if (!user || user.status !== 'Active') {
       return reply.status(401).send({ message: 'Your session is no longer valid. Please sign in again.' });
@@ -37,6 +37,8 @@ export default async function usersRoutes(fastify) {
 
   fastify.get('/', controller.list);
   fastify.get('/companies', controller.companies); // used by the Add/Edit User company checkboxes
+  fastify.get('/limit', controller.limit);
+  fastify.put('/limit', controller.setLimit);
   fastify.post('/', controller.create);
   fastify.put('/:id', controller.update);
   fastify.patch('/:id/status', controller.setStatus);

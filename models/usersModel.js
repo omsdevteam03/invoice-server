@@ -88,6 +88,25 @@ export const createUsersModel = (db) => {
       return rows[0].n;
     },
 
+    async countUsers() {
+      const { rows } = await db.query('SELECT COUNT(*)::int AS n FROM users');
+      return rows[0].n;
+    },
+
+    // returns a number, or null when there is no limit
+    async getUserLimit() {
+      const { rows } = await db.query(`SELECT value FROM app_settings WHERE key = 'max_users'`);
+      return rows[0] && rows[0].value !== '' ? Number(rows[0].value) : null;
+    },
+
+    async setUserLimit(limit) {
+      await db.query(
+        `INSERT INTO app_settings (key, value) VALUES ('max_users', $1)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+        [limit === null ? '' : String(limit)]
+      );
+    },
+
     async listCompanies() {
       const { rows } = await db.query(
         'SELECT id, company_name AS name FROM company_settings ORDER BY company_name'

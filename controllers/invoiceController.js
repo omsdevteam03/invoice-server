@@ -33,6 +33,9 @@ const toInvoice = (inv) => ({
   activityLog: inv.activity_log || [],
   convertedFromId: inv.converted_from_id,
   convertedInvoiceId: inv.converted_invoice_id,
+  createdBy: inv.created_by,
+  createdByName: inv.created_by_name,
+  createdVia: inv.created_via,
 });
 
 export const getInvoice = async (req, reply) => {
@@ -56,7 +59,8 @@ export const getInvoices = async (req, reply) => {
 
 export const upsertInvoice = async (req, reply) => {
   try {
-    const saved = await saveInvoice(req.body, req.dataScope, req.ownCompanyId);
+    const creator = { id: req.user?.id, name: req.user?.name };
+    const saved = await saveInvoice(req.body, req.dataScope, req.ownCompanyId, creator);
     if (!saved) return reply.status(404).send({ message: 'Invoice not found' });
 
     // Customer totalBilled update (only within this invoice's company)

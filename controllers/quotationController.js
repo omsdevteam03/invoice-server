@@ -29,6 +29,9 @@ function mapQuotationRow(q) {
     includeGst: q.include_gst !== false,
     gstPercent: q.gst_percent,
     gstMode: q.gst_mode || (q.include_gst === false ? 'without' : 'with'),
+    createdBy: q.created_by,
+    createdByName: q.created_by_name,
+    createdVia: q.created_via,
   };
 }
 
@@ -45,7 +48,8 @@ export const getQuotations = async (req, reply) => {
 export const upsertQuotation = async (req, reply) => {
   try {
     const { isNew, ...body } = req.body;
-    const saved = await saveQuotation(body, Boolean(isNew), false, req.dataScope, req.ownCompanyId);
+    const creator = { id: req.user?.id, name: req.user?.name };
+    const saved = await saveQuotation(body, Boolean(isNew), false, req.dataScope, req.ownCompanyId, creator);
     if (!saved) return reply.status(404).send({ message: 'Quotation not found' });
     return reply.send(mapQuotationRow(saved));
   } catch (err) {

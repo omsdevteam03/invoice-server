@@ -10,7 +10,7 @@ export const adminOnly = async (request, reply) => {
 export const authenticate = async (request, reply) => {
   try {
     const token = (request.headers.authorization || '').replace(/^Bearer\s+/i, '');
-    const payload = jwt.verify(token, process.env.JWT_SECRET || 'secret123'); // same secret as authController
+    const payload = jwt.verify(token, process.env.JWT_SECRET);
     const { rows } = await db.query(
       `SELECT u.id, u.name, u.email, u.role, u.status,
               COALESCE(array_agg(uc.company_id) FILTER (WHERE uc.company_id IS NOT NULL), '{}') AS "companyIds"

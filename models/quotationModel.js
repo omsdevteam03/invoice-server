@@ -55,7 +55,7 @@ const reserveNextQuotationNumber = async (client) => {
   return formatNumber(nextSeq);
 };
 
-export const saveQuotation = async (q, isNew, byAi = false, scope = [], ownCompanyId = null) => {
+export const saveQuotation = async (q, isNew, byAi = false, scope = [], ownCompanyId = null, creator = {}) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -102,10 +102,10 @@ export const saveQuotation = async (q, isNew, byAi = false, scope = [], ownCompa
         accent_color, accent_bg, issuer_name, issuer_address, issuer_phone,
         issuer_email, issuer_contact, project_title, client_address, logo,
         template_style, cost_items, include_gst, gst_percent, gst_mode, activity_log,
-        company_id
+        company_id, created_by, created_by_name, created_via
       ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-        $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39
+        $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$41,$42,$43
       )
       ON CONFLICT (id) DO UPDATE SET
         name=$2, company=$3, email=$4, phone=$5, date=$6, valid_until=$7,
@@ -133,6 +133,9 @@ export const saveQuotation = async (q, isNew, byAi = false, scope = [], ownCompa
         JSON.stringify(activityLog),
         ownCompanyId,   // $39 - new quotations are saved under this company
         scope,          // $40 - which existing quotations this user may overwrite
+        creator.id != null ? String(creator.id) : null,  // $41 - created_by (INSERT only)
+        creator.name || null,                            // $42 - created_by_name
+        byAi ? 'ai' : null,                              // $43 - created_via
       ]
     );
 

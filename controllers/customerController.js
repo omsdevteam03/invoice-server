@@ -42,6 +42,9 @@ export const getCustomers = async (req, reply) => {
       country: c.country,
       gstNumber: c.gst_number,
       customerType: c.customer_type,
+      createdBy: c.created_by,
+      createdByName: c.created_by_name,
+      products: c.products || [],
     }));
     return reply.send(customers);
   } catch (err) {
@@ -63,12 +66,16 @@ export const upsertCustomer = async (req, reply) => {
       }
     }
 
-    const saved = await saveCustomer(customerData, req.dataScope, req.ownCompanyId);
+    const creator = {
+      id: req.user?.id ?? customerData.createdBy,
+      name: req.user?.name ?? customerData.createdByName,
+    };
+    const saved = await saveCustomer(customerData, req.dataScope, req.ownCompanyId, creator);
     if (!saved) return reply.status(404).send({ message: 'Customer not found' });
     return reply.send(saved);
   } catch (err) {
-    req.log.error(err); // logs the real Postgres error server-side instead of just failing silently
-    return reply.status(500).send({ message: 'Server error', error: err.message });
+    req.log.error(err);
+    return reply.status(err.statusCode || 500).send({ message: err.message, error: err.message });
   }
 };
 

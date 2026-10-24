@@ -9,7 +9,7 @@ function mapQuotationRow(q) {
     quotationNumber: q.quotation_number || null,
     sentAt: q.sent_at || null,
     updatedAt: q.updated_at || null,
-    name: q.name, company: q.company,
+    name: q.name, salutation: q.salutation || '', company: q.company,
     email: q.email, phone: q.phone, date: q.date,
     validUntil: q.valid_until, status: q.status, amount: Number(q.amount),
     timeline: q.timeline, description: q.description,

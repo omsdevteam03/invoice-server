@@ -7,6 +7,7 @@ import {
 const toInvoice = (inv) => ({
   id: inv.id,
   invoiceNo: inv.invoice_no,
+  buyerSalutation: inv.buyer_salutation || '',
   buyerName: inv.buyer_name,
   buyerCompanyName: inv.buyer_company_name,
   buyerAddress: inv.buyer_address,
@@ -19,6 +20,8 @@ const toInvoice = (inv) => ({
   gstPercent: Number(inv.gst_percent || 18),
   companyName: inv.company_name,
   companyAddress: inv.company_address,
+  companyMobile: inv.company_mobile,
+  companyEmail: inv.company_email,
   companyGSTIN: inv.company_gstin,
   items: inv.items,
   amountPaid: Number(inv.amount_paid || 0),
@@ -36,6 +39,11 @@ const toInvoice = (inv) => ({
   createdBy: inv.created_by,
   createdByName: inv.created_by_name,
   createdVia: inv.created_via,
+  // ✅ NEW: E-Way Bill fields
+  ewayBillNo: inv.eway_bill_no,
+  ewayBillDate: inv.eway_bill_date,
+  ewayBillValidUpto: inv.eway_bill_valid_upto,
+  ewayBillDetails: inv.eway_bill_details,
 });
 
 export const getInvoice = async (req, reply) => {
@@ -63,7 +71,6 @@ export const upsertInvoice = async (req, reply) => {
     const saved = await saveInvoice(req.body, req.dataScope, req.ownCompanyId, creator);
     if (!saved) return reply.status(404).send({ message: 'Invoice not found' });
 
-    // Customer totalBilled update (only within this invoice's company)
     const buyerName = req.body.buyerName;
     const result = await pool.query(
       `SELECT total FROM invoices WHERE buyer_name = $1 AND company_id IS NOT DISTINCT FROM $2 AND deleted_at IS NULL`,

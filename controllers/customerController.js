@@ -18,6 +18,7 @@ export const getCustomers = async (req, reply) => {
     const rows = await getAllCustomers(req.dataScope);
     const customers = rows.map(c => ({
       id: c.id,
+      title: c.title,
       name: c.name,
       company: c.company,
       email: c.email,

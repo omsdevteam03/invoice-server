@@ -43,8 +43,8 @@ export const saveCustomer = async (c, scope = [], ownCompanyId = null, creator =
         status, type, category, total_billed,
         address, addresses, since, notes, tags,
         city, state, country, gst_number, customer_type, company_id,
-        created_by, created_by_name, products
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$27,$28,$29)
+        created_by, created_by_name, products, title
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$27,$28,$29,$30)
       ON CONFLICT (id) DO UPDATE SET
         name=$2, company=$3, email=$4, emails=$5, phone=$6, phones=$7, support_number=$8,
         whatsapp=$9, whatsapps=$10,
@@ -52,6 +52,7 @@ export const saveCustomer = async (c, scope = [], ownCompanyId = null, creator =
         address=$15, addresses=$16, since=$17, notes=$18, tags=$19,
         city=$20, state=$21, country=$22, gst_number=$23, customer_type=$24,
         products=$29,
+        title=$30,
         deleted_at=NULL
       WHERE ($26::int[] IS NULL OR customers.company_id = ANY($26))
       RETURNING *`,
@@ -82,6 +83,7 @@ export const saveCustomer = async (c, scope = [], ownCompanyId = null, creator =
         creator.id != null ? String(creator.id) : null,
         creator.name || null,
         JSON.stringify(c.products || []),
+        c.title || null,
       ]
     );
 

@@ -7,6 +7,7 @@ import * as customerModel from "../models/customerModel.js";
 import * as quotationModel from "../models/quotationModel.js";
 import * as invoiceModel from "../models/invoiceModel.js";
 import * as settingsModel from "../models/settingsModel.js";
+import { generateForInvoice } from "./ewayBillController.js";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -152,6 +153,18 @@ const SYSTEM_INSTRUCTION =
   "'change someone's role'), do NOT call any tool. Reply that users are managed only by an " +
   "Admin on the Users page. The word 'user' alone never means customer: only create or edit a " +
   "customer when the user says customer, client or buyer. " +
+  "You CAN generate e-way bills for Final invoices using generate_eway_bill. Call " +
+  "search_invoices first to find the invoice. The vehicle number is required: if the user " +
+  "has not given one, call ask_user_questions to ask for it (and optionally the transporter " +
+  "GSTIN) and NEVER invent one. An e-way bill is only allowed when the invoice total is above " +
+  "₹50,000, the invoice is not a Proforma, and every item has an HSN code (4, 6 or 8 digits) " +
+  "and a unit. If the tool returns validation errors, tell the user exactly what is missing. " +
+  "If only HSN codes or units are missing, ask the user for them and fix them with " +
+  "update_invoice (send hsnCode and unit on every item), then try again. " +
+  "When the user gives a mobile number, address, city, pincode or GSTIN for a person, ALWAYS " +
+  "pass them to create_customer (phone, address, city, gstNumber) and to create_invoice " +
+  "(buyerMobile, buyerAddress, buyerGSTIN). Keep the pincode inside the address text. " +
+  "Put a title like Mr./Mrs./Ms. in buyerSalutation, never inside buyerName. Never drop a detail the user gave. " +
   "If asked your name, say you're __AI_NAME__.";
 
 const MAX_TOOL_ROUNDS = 6;
@@ -470,7 +483,8 @@ const TOOLS = [
         parameters: {
           type: "OBJECT",
           properties: {
-            buyerName: { type: "STRING", description: "The buyer's person name exactly as the user gave it." },
+            buyerName: { type: "STRING", description: "The buyer's person name WITHOUT the title (no Mr./Mrs.)." },
+            buyerSalutation: { type: "STRING", description: "Title like Mr., Mrs., Ms., Dr. if the user gave one." },
             buyerCompanyName: { type: "STRING", description: "ONLY if the user explicitly gave a company name. If they gave just a name, OMIT this field entirely. Never copy the buyer's name into it." },
             buyerAddress: { type: "STRING" },
             buyerMobile: { type: "STRING" },
@@ -487,6 +501,8 @@ const TOOLS = [
                   description: { type: "STRING" },
                   quantity: { type: "NUMBER" },
                   unitPrice: { type: "NUMBER" },
+                  hsnCode: { type: "STRING", description: "HSN/SAC code, 4, 6 or 8 digits. Needed for e-way bills." },
+                  unit: { type: "STRING", description: "e.g. Nos, Pcs, Kg. Defaults to Nos." },
                 },
                 required: ["description", "quantity", "unitPrice"],
               },
@@ -526,12 +542,17 @@ const TOOLS = [
                   description: { type: "STRING" },
                   quantity: { type: "NUMBER" },
                   unitPrice: { type: "NUMBER" },
+                  hsnCode: { type: "STRING", description: "HSN/SAC code, 4, 6 or 8 digits. Needed for e-way bills." },
+                  unit: { type: "STRING", description: "e.g. Nos, Pcs, Kg. Defaults to Nos." },
                 },
                 required: ["description", "quantity", "unitPrice"],
               },
             },
             dueDate: { type: "STRING", description: "YYYY-MM-DD" },
             notes: { type: "STRING" },
+            buyerAddress: { type: "STRING", description: "Buyer address including pincode" },
+            buyerMobile: { type: "STRING" },
+            buyerGSTIN: { type: "STRING" },
           },
           required: ["invoiceId"],
         },
@@ -545,6 +566,19 @@ const TOOLS = [
             invoiceId: { type: "STRING", description: "ID of the invoice to delete, from search_invoices" },
           },
           required: ["invoiceId"],
+        },
+      },
+      {
+        name: "generate_eway_bill",
+        description: "Generate an e-way bill for an existing Final invoice. Needs the invoice ID (from search_invoices) and the vehicle number the user gave. Never guess the vehicle number.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            invoiceId: { type: "STRING", description: "ID of the invoice, from search_invoices" },
+            vehicleNo: { type: "STRING", description: "Vehicle number, e.g. TN01AB1234" },
+            transporterId: { type: "STRING", description: "Optional transporter GSTIN (15 characters)" },
+          },
+          required: ["invoiceId", "vehicleNo"],
         },
       },
     ],
@@ -565,6 +599,7 @@ const VIEWABLE_TOOLS = {
   approve_quotation: (result) => (result?.id ? { type: "quotation", id: result.id, label: quotationLabel(result) } : null),
   create_invoice: (result) => (result?.id ? { type: "invoice", id: result.id, label: result.invoice_no || result.id } : null),
   update_invoice: (result) => (result?.id ? { type: "invoice", id: result.id, label: result.invoice_no || result.id } : null),
+  generate_eway_bill: (result) => (result?.id ? { type: "invoice", id: result.id, label: result.invoice_no || result.id } : null),
   create_customer: (result) => (result?.id ? { type: "customer", id: result.id, label: result.name } : null),
   update_customer: (result) => (result?.id ? { type: "customer", id: result.id, label: result.name } : null),
 };
@@ -695,6 +730,8 @@ function toInvoiceItems(items = []) {
     return {
       sl: i + 1,
       description: it.description || "",
+      hsnCode: String(it.hsnCode || "").replace(/\D/g, ""),
+      unit: it.unit || "Nos",
       qty,
       rate,
       amount: qty * rate,
@@ -1063,6 +1100,23 @@ async function executeTool(name, args, ctx) {
           return { error: "That quotation is still a draft with no QT number. Call approve_quotation first, then create the invoice." };
         }
       }
+
+      // Split a title like "Mrs." out of the name
+      const SALUTATIONS = { mr: "Mr.", mrs: "Mrs.", ms: "Ms.", miss: "Miss", dr: "Dr." };
+      const sm = /^(mr|mrs|ms|miss|dr)\.?\s+(.+)$/i.exec((args.buyerName || "").trim());
+      const buyerName = sm ? sm[2].trim() : args.buyerName;
+      const buyerSalutation = args.buyerSalutation || (sm ? SALUTATIONS[sm[1].toLowerCase()] : "");
+
+      // Fill anything the AI forgot from the saved customer
+      const allCustomers = await customerModel.getAllCustomers(ctx.scope);
+      const nameKey = (buyerName || "").trim().toLowerCase();
+      const cust = allCustomers.find((c) => (c.name || "").trim().toLowerCase() === nameKey);
+
+      const buyerAddress = args.buyerAddress || [cust?.address, cust?.city].filter(Boolean).join(", ") || null;
+      let buyerMobile = args.buyerMobile || cust?.phone || null;
+      if (buyerMobile && /^\d{10}$/.test(buyerMobile.trim())) buyerMobile = `+91 ${buyerMobile.trim()}`;
+      const buyerGSTIN = args.buyerGSTIN || cust?.gst_number || null;
+
       const normalizedItems = toInvoiceItems(args.items);
       const subtotal = normalizedItems.reduce((sum, i) => sum + i.amount, 0);
       const type = args.type === "Proforma" ? "Proforma" : "Final";
@@ -1082,7 +1136,8 @@ async function executeTool(name, args, ctx) {
         {
           id: crypto.randomUUID(),
           invoiceNo,
-          buyerName: args.buyerName,
+          buyerName,
+          buyerSalutation,
           // Only keep a company name if the user really gave one
           // (ignore it when the AI just copied the person's name into it)
           buyerCompanyName:
@@ -1090,9 +1145,9 @@ async function executeTool(name, args, ctx) {
               args.buyerCompanyName.trim().toLowerCase() !== (args.buyerName || "").trim().toLowerCase()
               ? args.buyerCompanyName.trim()
               : null,
-          buyerAddress: args.buyerAddress || null,
-          buyerMobile: args.buyerMobile || null,
-          buyerGSTIN: args.buyerGSTIN || null,
+          buyerAddress,
+          buyerMobile,
+          buyerGSTIN,
           date: new Date().toISOString().slice(0, 10),
           dueDate: args.dueDate || null,
           status: "Unpaid",
@@ -1106,6 +1161,8 @@ async function executeTool(name, args, ctx) {
           companyName: companyRow?.company_name || null,
           companyAddress: companyRow?.company_address || null,
           companyGSTIN: companyRow?.gstin || null,
+          companyMobile: companyRow?.company_phone || null,
+          companyEmail: companyRow?.company_email || null,
           logo: companyRow?.logo || null,
           // Uses the actual signature file that exists in /public
           signature: "/signature.png",
@@ -1154,9 +1211,9 @@ async function executeTool(name, args, ctx) {
         invoiceNo: existing.invoice_no,
         buyerName: existing.buyer_name,
         buyerCompanyName: existing.buyer_company_name,
-        buyerAddress: existing.buyer_address,
-        buyerMobile: existing.buyer_mobile,
-        buyerGSTIN: existing.buyer_gstin,
+        buyerAddress: args.buyerAddress ?? existing.buyer_address,
+        buyerMobile: args.buyerMobile ?? existing.buyer_mobile,
+        buyerGSTIN: args.buyerGSTIN ?? existing.buyer_gstin,
         date: existing.date,
         dueDate: args.dueDate ?? existing.due_date,
         status: args.status ?? existing.status,
@@ -1179,6 +1236,14 @@ async function executeTool(name, args, ctx) {
         activityLog: existing.activity_log,
         convertedFromId: existing.converted_from_id,
         convertedInvoiceId: existing.converted_invoice_id,
+        companyMobile: existing.company_mobile,
+        companyEmail: existing.company_email,
+        buyerSalutation: existing.buyer_salutation,
+        ewayBillNo: existing.eway_bill_no,
+        ewayBillDate: existing.eway_bill_date,
+        ewayBillValidUpto: existing.eway_bill_valid_upto,
+        ewayBillDetails: existing.eway_bill_details,
+        customColumns: existing.custom_columns,
       };
       const invoice = await invoiceModel.saveInvoice(merged, ctx.scope, ctx.ownCompanyId);
       if (!invoice) return { error: "Invoice not found or you don't have access to it." };
@@ -1190,6 +1255,24 @@ async function executeTool(name, args, ctx) {
       if (!existing) return { error: "Invoice not found. Run search_invoices again to confirm the ID." };
       await invoiceModel.deleteInvoice(args.invoiceId, ctx.scope);
       return { deleted: true, invoiceId: args.invoiceId, invoiceNo: existing.invoice_no };
+    }
+
+    case "generate_eway_bill": {
+      const existing = await findInvoiceById(args.invoiceId, ctx);
+      if (!existing) return { error: "Invoice not found. Run search_invoices again to confirm the ID." };
+
+      const out = await generateForInvoice({
+        invoiceId: args.invoiceId,
+        vehicleNo: args.vehicleNo,
+        transporterId: args.transporterId,
+        scope: ctx.scope,
+        user: ctx.creator,
+      });
+      if (out.status !== 200) {
+        const b = out.body;
+        return { error: [b.message, ...(b.details || [])].filter(Boolean).join(" | ") };
+      }
+      return { id: existing.id, invoice_no: existing.invoice_no, ...out.body };
     }
 
     default:
@@ -1350,7 +1433,7 @@ async function generateAssistantReply(chatId, aiName, ctx) {
 
     if (/^delete_/.test(name) && !toolResult?.error) deleteOk = true;
 
-    if (/^(create|update|delete|approve)_/.test(name)) {
+    if (/^(create|update|delete|approve|generate)_/.test(name)) {
       if (toolResult?.error) mutationError = toolResult.error;
       else mutationOk = true;
     }

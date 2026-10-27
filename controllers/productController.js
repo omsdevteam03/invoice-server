@@ -10,6 +10,23 @@ const format = (p) => ({
   gst_type: p.gst_type || 'With GST',
   gst_percent: Number(p.gst_percent),
   stock_qty: Number(p.stock_qty),
+  // "hsn" is what ProductForm uses, "hsn_code" is what InvoiceForm uses
+  hsn: p.hsn_code ?? '',
+  hsn_code: p.hsn_code ?? '',
+  category: p.category ?? '',
+  item_code: p.item_code ?? '',
+  sale_tax_mode: p.sale_tax_mode || (p.gst_type === 'GST Included' ? 'With Tax' : 'Without Tax'),
+  discount: Number(p.discount || 0),
+  discount_type: p.discount_type || 'Percentage',
+  wholesale_rate: Number(p.wholesale_rate || 0),
+  wholesale_tax_mode: p.wholesale_tax_mode || 'Without Tax',
+  min_wholesale_qty: Number(p.min_wholesale_qty || 0),
+  purchase_rate: Number(p.purchase_rate || 0),
+  purchase_tax_mode: p.purchase_tax_mode || 'Without Tax',
+  at_price: Number(p.at_price || 0),
+  as_of_date: p.as_of_date || '',
+  min_stock: Number(p.min_stock || 0),
+  location: p.location ?? '',
 });
 
 export const getProducts = async (req, reply) => {

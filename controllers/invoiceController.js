@@ -44,6 +44,8 @@ const toInvoice = (inv) => ({
   ewayBillDate: inv.eway_bill_date,
   ewayBillValidUpto: inv.eway_bill_valid_upto,
   ewayBillDetails: inv.eway_bill_details,
+  // Custom item columns (e.g. "num") added with the + button
+  customColumns: inv.custom_columns || [],
 });
 
 export const getInvoice = async (req, reply) => {

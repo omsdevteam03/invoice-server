@@ -8,11 +8,18 @@ const HSN_REGEX = /^(\d{4}|\d{6}|\d{8})$/;
 const VEHICLE_REGEX = /^[A-Z]{2}\d{2}[A-Z]{0,3}\d{4}$/;
 const EWB_MIN_VALUE = 50000;
 
+// E-Way Bill is only for goods. SAC codes for services start with "99".
+const isServiceItem = (it) =>
+    it.itemType === 'Service' || String(it.hsnCode || '').trim().startsWith('99');
+
 const validateForEwayBill = (inv, vehicleNo) => {
     const errors = [];
 
     if ((inv.invoiceNo || '').startsWith('PI-'))
         errors.push('E-Way Bill cannot be generated for a Proforma invoice');
+
+    if ((inv.items || []).length > 0 && inv.items.every(isServiceItem))
+        errors.push('E-Way Bill is only for goods. This invoice has only service items');
 
     if (Number(inv.total) <= EWB_MIN_VALUE)
         errors.push(`E-Way Bill is only needed when the invoice value is above ₹${EWB_MIN_VALUE.toLocaleString('en-IN')}`);
@@ -47,105 +54,106 @@ const validateForEwayBill = (inv, vehicleNo) => {
     return errors;
 };
 
+// Reusable core: used by the HTTP route AND by Nexa (AI chat tool)
+export async function generateForInvoice({ invoiceId, vehicleNo, transporterId, scope, user }) {
+    if (!invoiceId) return { status: 400, body: { message: 'invoiceId is required' } };
+    if (!vehicleNo) return { status: 400, body: { message: 'vehicleNo is required' } };
+
+    const inv = await getInvoiceById(invoiceId, scope);
+    if (!inv) return { status: 404, body: { message: 'Invoice not found' } };
+
+    if (inv.eway_bill_no) {
+        return { status: 400, body: { message: 'E-Way Bill already generated', ewayBillNo: inv.eway_bill_no } };
+    }
+
+    const errors = validateForEwayBill(toUpsertShape(inv), vehicleNo);
+    if (errors.length > 0) {
+        return { status: 400, body: { message: 'Invoice validation failed', details: errors } };
+    }
+
+    const invoice = {
+        id: inv.id,
+        invoiceNo: inv.invoice_no,
+        date: inv.date,
+        companyName: inv.company_name,
+        companyGSTIN: inv.company_gstin,
+        companyAddress: inv.company_address,
+        buyerName: inv.buyer_company_name || inv.buyer_name,
+        buyerGSTIN: inv.buyer_gstin,
+        buyerAddress: inv.buyer_address,
+        gstType: inv.gst_type,
+        gstPercent: Number(inv.gst_percent || 18),
+        total: Number(inv.total),
+        items: inv.items || [],
+    };
+
+    const cleanVehicleNo = vehicleNo.toUpperCase().replace(/[\s-]/g, '');
+    const result = await generateEwayBill({ invoice, vehicleNo: cleanVehicleNo, transporterId });
+
+    const ewayBillDetails = {
+        vehicleNo: cleanVehicleNo,
+        fromPlace: result.fromPlace,
+        toPlace: result.toPlace,
+        transporterId: transporterId || '',
+    };
+    await saveInvoice(
+        {
+            ...toUpsertShape(inv),
+            ewayBillNo: result.ewayBillNo,
+            ewayBillDate: result.ewayBillDate,
+            ewayBillValidUpto: result.validUpto,
+            ewayBillDetails,
+        },
+        scope,
+        inv.company_id,
+        user
+    );
+
+    return {
+        status: 200,
+        body: {
+            ewayBillNo: result.ewayBillNo,
+            ewayBillDate: result.ewayBillDate,
+            validUpto: result.validUpto,
+            ewayBillDetails,
+        },
+    };
+}
+
 export const createEwayBill = async (req, reply) => {
     try {
         const { invoiceId, vehicleNo, transporterId } = req.body;
-
-        if (!invoiceId) return reply.status(400).send({ message: 'invoiceId is required' });
-        if (!vehicleNo) return reply.status(400).send({ message: 'vehicleNo is required' });
-
-        // 1. Fetch the invoice from DB (respect user's data scope)
-        const inv = await getInvoiceById(invoiceId, req.dataScope);
-        if (!inv) return reply.status(404).send({ message: 'Invoice not found' });
-
-        if (inv.eway_bill_no) {
-            return reply.status(400).send({
-                message: 'E-Way Bill already generated',
-                ewayBillNo: inv.eway_bill_no,
-            });
+        const out = await generateForInvoice({
+            invoiceId, vehicleNo, transporterId,
+            scope: req.dataScope,
+            user: { id: req.user?.id, name: req.user?.name },
+        });
+        return reply.status(out.status).send(out.body);
+    } catch (err) {
+        req.log.error('===== EWB ERROR =====');
+        req.log.error(err.message);
+        if (err.response) {
+            req.log.error('Status: ' + err.response.status);
+            req.log.error('Data: ' + JSON.stringify(err.response.data, null, 2));
         }
-
-        // 1b. Validate the invoice data before touching the GSP
-        const errors = validateForEwayBill(toUpsertShape(inv), vehicleNo);
-        if (errors.length > 0) {
-            return reply.status(400).send({
-                message: 'Invoice validation failed',
-                details: errors,
-            });
-        }
-
-        // 2. Convert DB row → invoice object for the service
-        const invoice = {
-            id: inv.id,
-            invoiceNo: inv.invoice_no,
-            date: inv.date,
-            companyName: inv.company_name,
-            companyGSTIN: inv.company_gstin,
-            companyAddress: inv.company_address,
-            buyerName: inv.buyer_company_name || inv.buyer_name,
-            buyerGSTIN: inv.buyer_gstin,
-            buyerAddress: inv.buyer_address,
-            gstType: inv.gst_type,
-            gstPercent: Number(inv.gst_percent || 18),
-            total: Number(inv.total),
-            items: inv.items || [],
-        };
-
-        
-        // 3. Call the GSP
-        const cleanVehicleNo = vehicleNo.toUpperCase().replace(/[\s-]/g, '');
-        const result = await generateEwayBill({ invoice, vehicleNo: cleanVehicleNo, transporterId });
-
-        // 4. Save the EWB number + Part-B details to the invoice
-        const ewayBillDetails = {
-            vehicleNo: cleanVehicleNo,
-            fromPlace: result.fromPlace,
-            toPlace: result.toPlace,
-            transporterId: transporterId || '',
-        };
-        await saveInvoice(
-            {
-                ...toUpsertShape(inv),
-                ewayBillNo: result.ewayBillNo,
-                ewayBillDate: result.ewayBillDate,
-                ewayBillValidUpto: result.validUpto,
-                ewayBillDetails,
-            },
-            req.dataScope,
-            inv.company_id,
-            { id: req.user?.id, name: req.user?.name }
-        );
-    return reply.send({
-      ewayBillNo: result.ewayBillNo,
-      ewayBillDate: result.ewayBillDate,
-      validUpto: result.validUpto,
-      ewayBillDetails,
-    });
-  } catch (err) {
-    req.log.error('===== EWB ERROR =====');
-    req.log.error(err.message);
-    if (err.response) {
-      req.log.error('Status: ' + err.response.status);
-      req.log.error('Data: ' + JSON.stringify(err.response.data, null, 2));
+        const msg = err.response?.data?.message
+                 || err.response?.data?.error
+                 || err.message;
+        return reply.status(500).send({
+            message: 'EWB generation failed',
+            error: msg,
+            details: err.response?.data || null,
+        });
     }
-    const msg = err.response?.data?.message
-             || err.response?.data?.error
-             || err.message;
-    return reply.status(500).send({
-      message: 'EWB generation failed',
-      error: msg,
-      details: err.response?.data || null
-    });
-  }
 };
+
 // Helper: convert DB row → shape expected by saveInvoice()
 function toUpsertShape(inv, logMessage = 'E-Way Bill generated') {
     return {
         id: inv.id,
         invoiceNo: inv.invoice_no,
-             buyerSalutation: inv.buyer_salutation,
+        buyerSalutation: inv.buyer_salutation,
         buyerName: inv.buyer_name,
-        buyerCompanyName: inv.buyer_company_name,   buyerName: inv.buyer_name,
         buyerCompanyName: inv.buyer_company_name,
         buyerAddress: inv.buyer_address,
         buyerMobile: inv.buyer_mobile,
@@ -180,6 +188,7 @@ function toUpsertShape(inv, logMessage = 'E-Way Bill generated') {
         ewayBillDate: inv.eway_bill_date,
         ewayBillValidUpto: inv.eway_bill_valid_upto,
         ewayBillDetails: inv.eway_bill_details,
+        customColumns: inv.custom_columns || [],
     };
 }
 
@@ -212,6 +221,9 @@ export const updateVehicle = async (req, reply) => {
     }
 };
 
+// An e-way bill can be cancelled only within 24 hours of generating it
+const EWB_CANCEL_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 export const cancelEway = async (req, reply) => {
     try {
         const { invoiceId, reasonCode } = req.body;
@@ -221,6 +233,14 @@ export const cancelEway = async (req, reply) => {
         const inv = await getInvoiceById(invoiceId, req.dataScope);
         if (!inv) return reply.status(404).send({ message: 'Invoice not found' });
         if (!inv.eway_bill_no) return reply.status(400).send({ message: 'No E-Way Bill on this invoice' });
+
+        // 24-hour check (done here, so it also blocks direct API calls)
+        const generatedAt = inv.eway_bill_date ? new Date(inv.eway_bill_date) : null;
+        if (generatedAt && !isNaN(generatedAt.getTime())
+            && Date.now() - generatedAt.getTime() > EWB_CANCEL_WINDOW_MS) {
+            const msg = 'Cancel time is over. An e-way bill can be cancelled only within 24 hours of generating it.';
+            return reply.status(400).send({ message: msg, error: msg });
+        }
 
         await cancelEwayBill({ gstin: inv.company_gstin, ewbNo: inv.eway_bill_no, reasonCode });
         await saveInvoice(

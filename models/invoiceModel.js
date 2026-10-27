@@ -21,14 +21,14 @@ export const saveInvoice = async (inv, scope = [], ownCompanyId = null, creator 
       payments, activity_log, converted_from_id, converted_invoice_id, company_id,
       created_by, created_by_name, created_via,
       eway_bill_no, eway_bill_date, eway_bill_valid_upto,
-      buyer_salutation, eway_bill_details
+      buyer_salutation, eway_bill_details, custom_columns
     ) VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
       $19,$20,$21,$22,$23,$24,$25,$26,
       $27,$28,$29,$30,$31,
       $32,$33,$34,
       $35,$36,$37,
-      $38,$39
+      $38,$39,$41
     )
     ON CONFLICT (id) DO UPDATE SET
       invoice_no=$2, buyer_name=$3, buyer_company_name=$4, buyer_address=$5, buyer_mobile=$6, buyer_gstin=$7,
@@ -40,6 +40,7 @@ export const saveInvoice = async (inv, scope = [], ownCompanyId = null, creator 
       eway_bill_no=$35, eway_bill_date=$36, eway_bill_valid_upto=$37,
       buyer_salutation=$38,
       eway_bill_details=$39,
+      custom_columns=$41,
       deleted_at=NULL
     WHERE ($40::int[] IS NULL OR invoices.company_id = ANY($40))
     RETURNING *`,
@@ -84,6 +85,7 @@ export const saveInvoice = async (inv, scope = [], ownCompanyId = null, creator 
       inv.buyerSalutation || null,                      // $38
       inv.ewayBillDetails ? JSON.stringify(inv.ewayBillDetails) : null, // $39
       scope,                                            // $40
+      JSON.stringify(inv.customColumns || []),          // $41
     ]
   );
   return result.rows[0];

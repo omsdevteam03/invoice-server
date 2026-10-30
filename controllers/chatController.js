@@ -165,6 +165,7 @@ const SYSTEM_INSTRUCTION =
   "pass them to create_customer (phone, address, city, gstNumber) and to create_invoice " +
   "(buyerMobile, buyerAddress, buyerGSTIN). Keep the pincode inside the address text. " +
   "Put a title like Mr./Mrs./Ms. in buyerSalutation, never inside buyerName. Never drop a detail the user gave. " +
+  "If the user mentions a paid amount, advance, or amount received for an invoice, pass it as amountPaid in create_invoice. " +
   "If asked your name, say you're __AI_NAME__.";
 
 const MAX_TOOL_ROUNDS = 6;
@@ -510,6 +511,7 @@ const TOOLS = [
             dueDate: { type: "STRING", description: "YYYY-MM-DD" },
             fromQuotationId: { type: "STRING", description: "If converting an existing quotation to an invoice" },
             includeGst: { type: "BOOLEAN", description: "Default false. Set to true ONLY if the user explicitly asks for GST/tax to be added to the invoice." },
+            amountPaid: { type: "NUMBER", description: "Amount the customer has already paid (paid amount / advance), in rupees. Omit or 0 if the user did not mention one." },
           },
           required: ["buyerName", "items"],
         },
@@ -888,7 +890,11 @@ async function executeTool(name, args, ctx) {
           isTemplate: false,
           customerId: customer.id,
           name: customer.name || "",
-          company: customer.company || "",   // "" instead of null (list calls .toLowerCase())
+          // if the customer has only a name, don't save it again as the company
+          company:
+            (customer.company || "").trim().toLowerCase() === (customer.name || "").trim().toLowerCase()
+              ? ""
+              : (customer.company || ""),
           email: customer.email || "",
           phone: customer.phone || "",
           date: new Date().toISOString().slice(0, 10),
@@ -1131,6 +1137,8 @@ async function executeTool(name, args, ctx) {
       const gstPercent = invoiceSettings?.gst_percent ?? 18;
       const tax = includeGst ? Math.round(subtotal * (gstPercent / 100)) : 0;
       const total = subtotal + tax;
+      // never record more than the invoice total
+      const amountPaid = Math.min(Math.max(Number(args.amountPaid) || 0, 0), total);
 
       const invoice = await invoiceModel.saveInvoice(
         {
@@ -1150,13 +1158,16 @@ async function executeTool(name, args, ctx) {
           buyerGSTIN,
           date: new Date().toISOString().slice(0, 10),
           dueDate: args.dueDate || null,
-          status: "Unpaid",
+          status: type === "Final" && total > 0 && amountPaid >= total ? "Paid" : "Unpaid",
           gstType: includeGst ? "With GST" : "No GST",
           gstPercent,
           items: normalizedItems,
-          amountPaid: 0,
+          amountPaid,
+          payments: amountPaid > 0
+            ? [{ amount: amountPaid, method: "Cash", date: new Date().toISOString() }]
+            : [],
           total,
-          amountDue: total,
+          amountDue: total - amountPaid,
           notes: invoiceSettings?.default_notes || null,
           companyName: companyRow?.company_name || null,
           companyAddress: companyRow?.company_address || null,
@@ -1205,6 +1216,12 @@ async function executeTool(name, args, ctx) {
         ? normalizedItems.reduce((sum, i) => sum + i.amount, 0)
         : Number(existing.total);
       const amountPaid = args.amountPaid ?? Number(existing.amount_paid);
+      // if only the paid amount changed, keep the status in step with it
+      const autoStatus = args.status
+        ? args.status
+        : args.amountPaid !== undefined && existing.invoice_type !== "Proforma"
+          ? (amountPaid >= total ? "Paid" : existing.status === "Paid" ? "Unpaid" : existing.status)
+          : existing.status;
 
       const merged = {
         id: existing.id,
@@ -1216,7 +1233,7 @@ async function executeTool(name, args, ctx) {
         buyerGSTIN: args.buyerGSTIN ?? existing.buyer_gstin,
         date: existing.date,
         dueDate: args.dueDate ?? existing.due_date,
-        status: args.status ?? existing.status,
+        status: autoStatus,
         gstType: existing.gst_type,
         gstPercent: existing.gst_percent,
         items: normalizedItems,
